@@ -1,0 +1,36 @@
+account:
+  base_capital: 40000
+  currency: USD
+
+preferences:
+  nvda_role: "indicator_only"
+  nvda_core_weight: 0
+  avoid_chasing: true
+  prefer_limit_orders: true
+
+risk_rules:
+  max_single_core_position_pct: 0.12
+  max_single_beta_position_pct: 0.04
+  max_high_beta_bucket_pct: 0.08
+  max_new_buy_if_market_weak_pct: 0.15
+  max_new_buy_if_market_neutral_pct: 0.30
+  max_new_buy_if_market_strong_pct: 0.45
+  sleep_mode_max_pending_orders_pct: 0.30
+
+entry_rules:
+  near_day_high_threshold_pct: 1.0
+  near_day_low_threshold_pct: 1.0
+  require_above_open_for_add: true
+  do_not_buy_if_below_open_and_near_low: true
+  require_vwap_reclaim_for_weak_names: false
+
+sleep_limit_rules:
+  strong_core_discount_from_prev_close_pct:
+    - 1.5
+    - 3.0
+  beta_discount_from_prev_close_pct:
+    - 4.0
+    - 7.0
+  high_beta_discount_from_prev_close_pct:
+    - 8.0
+    - 12.0

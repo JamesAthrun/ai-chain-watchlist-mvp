@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+apscheduler
+python-telegram-bot
+yfinance
+pandas
+pyyaml
+tabulate
+python-dotenv
+requests
+pydantic

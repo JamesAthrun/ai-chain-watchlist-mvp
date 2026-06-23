@@ -1,0 +1,85 @@
+benchmarks:
+  core_indices:
+    - QQQ
+    - SMH
+    - SOXX
+    - ^SOX
+
+buckets:
+  core_ai_semis:
+    label: "核心 AI 半导体"
+    role: "core"
+    tickers:
+      - TSM
+      - ASML
+      - AMAT
+      - LRCX
+      - KLAC
+      - MU
+      - AVGO
+
+  elastic_ai_semis:
+    label: "弹性 AI 半导体"
+    role: "beta"
+    tickers:
+      - MRVL
+      - CRDO
+      - SNDK
+      - ASX
+      - AMKR
+      - TER
+      - FORM
+      - ALAB
+
+  packaging_substrate_epi:
+    label: "封测/载板/外延"
+    role: "beta"
+    tickers:
+      - KLIC
+      - AMKR
+      - ASX
+
+  optical_interconnect:
+    label: "光通信/互连"
+    role: "beta"
+    tickers:
+      - COHR
+      - LITE
+      - AAOI
+      - CRDO
+      - MRVL
+      - AVGO
+
+  ai_server_oem:
+    label: "AI 服务器/整机"
+    role: "beta"
+    tickers:
+      - SMCI
+      - DELL
+      - HPE
+      - CLS
+
+  ai_power_datacenter:
+    label: "AI 电力/数据中心基建"
+    role: "core"
+    tickers:
+      - VRT
+      - ETN
+      - PWR
+      - CEG
+      - GEV
+      - IREN
+
+  ai_cloud_compute_high_beta:
+    label: "AI 云/算力租赁高 beta"
+    role: "high_beta"
+    tickers:
+      - CRWV
+      - NBIS
+      - IREN
+      - CORZ
+
+indicators:
+  nvda:
+    ticker: NVDA
+    role: "indicator_only"
