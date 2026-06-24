@@ -9,6 +9,7 @@ from fastapi import FastAPI
 load_dotenv()
 
 from app.api.routes_chat import router as chat_router
+from app.api.routes_knowledge import router as knowledge_router
 from app.api.routes_market import router as market_router
 from app.api.routes_portfolio import router as portfolio_router
 
@@ -27,6 +28,7 @@ app = FastAPI(
 app.include_router(market_router)
 app.include_router(portfolio_router)
 app.include_router(chat_router)
+app.include_router(knowledge_router)
 
 
 @app.get("/")
