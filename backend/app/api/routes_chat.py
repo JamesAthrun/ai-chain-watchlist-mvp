@@ -12,7 +12,7 @@ from app.core.config_loader import (
     load_rules,
     load_watchlist,
 )
-from app.core.llm_client import enhance_report
+from app.core.llm_client import enhance_report, free_chat
 from app.core.market_data import fetch_snapshots
 from app.core.portfolio import analyze_portfolio
 from app.core.report import (
@@ -91,7 +91,7 @@ async def chat(req: ChatRequest):
         answer = _filter_bucket_report(summary, snapshots, "optical_interconnect")
     elif any(kw in msg for kw in ["半导体设备", "设备"]):
         answer = _filter_bucket_report(summary, snapshots, "core_ai_semis")
-    else:
+    elif any(kw in msg for kw in ["报告", "盯盘", "总结", "overview"]):
         # Full report
         plan = generate_sleep_plan_with_prices(
             summary, portfolio, rules, watchlist, snapshots
@@ -101,6 +101,15 @@ async def chat(req: ChatRequest):
             include_sleep_plan=True, sleep_plan=plan
         )
         answer = enhance_report(report)
+    else:
+        # Free chat with market context
+        import json
+        market_context = json.dumps({
+            "market_regime": summary.market_regime,
+            "benchmark_strength": {k: v for k, v in summary.benchmark_strength.items()} if hasattr(summary, 'benchmark_strength') else {},
+            "bucket_scores": [{"name": bs.label, "avg_pct": bs.avg_pct_change} for bs in summary.bucket_scores],
+        }, ensure_ascii=False)
+        answer = free_chat(msg, market_context)
 
     return ChatResponse(
         answer=answer,
