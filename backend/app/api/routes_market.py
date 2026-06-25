@@ -8,10 +8,10 @@ from fastapi import APIRouter, Query
 
 from app.core.config_loader import (
     get_all_tickers,
-    load_portfolio,
     load_rules,
     load_watchlist,
 )
+from app.core.portfolio_db import get_portfolio_data
 from app.core.llm_client import analyze_market
 from app.core.market_data import fetch_snapshots
 from app.core.models import MarketSummary, TickerSnapshot
@@ -84,7 +84,7 @@ async def sleep_plan(enhance: bool = Query(False)):
     snapshots, summary = _get_or_refresh()
     rules = load_rules()
     watchlist = load_watchlist()
-    portfolio_data = load_portfolio()
+    portfolio_data = get_portfolio_data()
     portfolio = analyze_portfolio(portfolio_data, snapshots)
 
     plan = generate_sleep_plan_with_prices(

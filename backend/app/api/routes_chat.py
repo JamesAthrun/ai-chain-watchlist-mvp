@@ -8,10 +8,10 @@ from pydantic import BaseModel
 
 from app.core.config_loader import (
     get_all_tickers,
-    load_portfolio,
     load_rules,
     load_watchlist,
 )
+from app.core.portfolio_db import get_portfolio_data
 from app.core.llm_client import enhance_report, free_chat
 from app.core.market_data import fetch_snapshots
 from app.core.portfolio import analyze_portfolio
@@ -45,7 +45,7 @@ async def chat(req: ChatRequest):
     tickers = get_all_tickers()
     watchlist = load_watchlist()
     rules = load_rules()
-    portfolio_data = load_portfolio()
+    portfolio_data = get_portfolio_data()
 
     snapshots = fetch_snapshots(tickers)
     summary = build_market_summary(snapshots, watchlist, rules)

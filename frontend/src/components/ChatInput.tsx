@@ -3,9 +3,10 @@ import { useState, useRef } from 'react'
 interface ChatInputProps {
   onSend: (message: string) => void
   disabled: boolean
+  placeholder?: string
 }
 
-export default function ChatInput({ onSend, disabled }: ChatInputProps) {
+export default function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
   const [input, setInput] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -33,7 +34,7 @@ export default function ChatInput({ onSend, disabled }: ChatInputProps) {
         onChange={(e) => setInput(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={disabled}
-        placeholder="输入问题..."
+        placeholder={placeholder || "输入问题..."}
         className="flex-1 px-4 py-2.5 bg-gray-700 border border-gray-600 rounded-full 
                    text-sm text-white placeholder-gray-400 outline-none focus:border-blue-500 
                    transition-colors disabled:opacity-50"

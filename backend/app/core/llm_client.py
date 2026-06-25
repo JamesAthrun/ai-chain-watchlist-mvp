@@ -229,6 +229,67 @@ def analyze_market(data_json: str, analysis_type: str = "market") -> Optional[st
     return result
 
 
+def parse_trade_intent(user_text: str, current_portfolio_json: str = "") -> Optional[dict]:
+    """Parse natural language into structured trade data.
+
+    Returns a dict like:
+      {"type": "trade", "trades": [{"action": "buy", "ticker": "NVDA", "shares": 100, "price": 135.0}]}
+    or:
+      {"type": "set_portfolio", "account_value": 50000, "cash": 20000,
+       "positions": [{"ticker": "NVDA", "shares": 100, "avg_cost": 135.0}]}
+    or None if LLM unavailable or parsing fails.
+    """
+    import json as _json
+
+    provider = get_llm_provider()
+    if provider == "none" or provider == "":
+        return None
+
+    system_prompt = (
+        "你是一个仓位记录助手。用户会用自然语言描述他们的美股交易或持仓情况。\n"
+        "请从用户的描述中提取结构化数据，严格返回 JSON 格式，不要返回任何其他内容。\n\n"
+        "规则：\n"
+        "1. 所有标的必须是美股 ticker（大写英文），如 NVDA、AVGO、MRVL\n"
+        "2. 如果用户描述的是单笔或多笔交易（买入/卖出/加仓/减仓/清仓），返回：\n"
+        '   {"type": "trade", "trades": [{"action": "buy"|"sell", "ticker": "XXX", "shares": 数量, "price": 价格}]}\n'
+        "3. 如果用户描述的是当前完整持仓状态（我现在持有.../我的仓位是...），返回：\n"
+        '   {"type": "set_portfolio", "account_value": 总资产, "cash": 现金, '
+        '"positions": [{"ticker": "XXX", "shares": 数量, "avg_cost": 成本价}]}\n'
+        "4. 如果无法确定 account_value，用 cash + sum(shares * avg_cost) 估算\n"
+        "5. 如果用户没提到现金，cash 设为 0\n"
+        "6. 清仓 = sell 全部持仓股数\n"
+        "7. 价格单位是美元\n"
+        "8. 只返回纯 JSON，不要加 markdown 代码块或其他文字\n"
+    )
+
+    user_msg = user_text
+    if current_portfolio_json:
+        user_msg = f"当前仓位状态:\n{current_portfolio_json}\n\n用户说: {user_text}"
+
+    if provider == "deepseek":
+        result = _call_llm_chat("https://api.deepseek.com", os.getenv("DEEPSEEK_API_KEY", ""),
+                                os.getenv("DEEPSEEK_MODEL", "deepseek-chat"), system_prompt, user_msg)
+    elif provider == "openai":
+        result = _call_llm_chat("https://api.openai.com", os.getenv("OPENAI_API_KEY", ""),
+                                os.getenv("OPENAI_MODEL", "gpt-4o-mini"), system_prompt, user_msg)
+    else:
+        return None
+
+    if result.startswith("API Key 未配置") or result.startswith("对话请求失败"):
+        return None
+
+    # Parse JSON from response
+    try:
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+            cleaned = cleaned.rsplit("```", 1)[0].strip()
+        return _json.loads(cleaned)
+    except _json.JSONDecodeError:
+        logger.warning(f"Failed to parse trade intent JSON: {result}")
+        return None
+
+
 def _call_llm_chat(base_url: str, api_key: str, model: str,
                     system_prompt: str, user_msg: str) -> str:
     """Generic LLM chat call."""

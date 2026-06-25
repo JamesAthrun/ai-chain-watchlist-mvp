@@ -4,7 +4,7 @@ import MessageList from './components/MessageList'
 import type { Message } from './components/MessageList'
 import QuickActions from './components/QuickActions'
 import ChatInput from './components/ChatInput'
-import { sendChat, getHealth, getMarketSummary, getSleepPlan, getPortfolio } from './api'
+import { sendChat, getHealth, getMarketSummary, getSleepPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory } from './api'
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -12,6 +12,8 @@ export default function App() {
   const [regime, setRegime] = useState('')
   const [connected, setConnected] = useState(false)
   const [enhance, setEnhance] = useState(true)
+  const [pendingTrade, setPendingTrade] = useState<Record<string, unknown> | null>(null)
+  const [tradeMode, setTradeMode] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // Check backend connection on mount
@@ -27,18 +29,91 @@ export default function App() {
   }, [messages, loading])
 
   const handleSend = async (message: string) => {
-    // Add user message
+    // Handle special quick action triggers
+    if (message === '__TRADE_INPUT__') {
+      setTradeMode(true)
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: '📝 请描述你的交易，例如：\n• "买了100股NVDA 均价135"\n• "卖了50股AVGO 180块"\n• "我现在持有 NVDA 200股成本130，MRVL 100股成本80"' },
+      ])
+      return
+    }
+    if (message === '__TRADE_HISTORY__') {
+      setMessages((prev) => [...prev, { role: 'user', content: '查看交易记录' }])
+      setLoading(true)
+      try {
+        const data = await getTradeHistory(20)
+        setMessages((prev) => [...prev, { role: 'assistant', content: formatTradeHistory(data) }])
+        setConnected(true)
+      } catch (err) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
+    // Handle confirm/cancel for pending trade
+    if (pendingTrade) {
+      if (message === '__CONFIRM__' || message.includes('确认') || message.toLowerCase() === 'y') {
+        setMessages((prev) => [...prev, { role: 'user', content: '✅ 确认' }])
+        setLoading(true)
+        try {
+          const result = await confirmPortfolio(pendingTrade)
+          const status = (result as { status: string }).status
+          setMessages((prev) => [...prev, {
+            role: 'assistant',
+            content: status === 'ok' ? '✅ 已记录！你可以点「💼 仓位」查看最新仓位。' : `❌ 记录失败: ${(result as { message?: string }).message || '未知错误'}`,
+          }])
+        } catch (err) {
+          setMessages((prev) => [...prev, { role: 'assistant', content: `记录失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+        } finally {
+          setPendingTrade(null)
+          setTradeMode(false)
+          setLoading(false)
+        }
+        return
+      }
+      if (message === '__CANCEL__' || message.includes('取消') || message.toLowerCase() === 'n') {
+        setMessages((prev) => [...prev, { role: 'user', content: '❌ 取消' }, { role: 'assistant', content: '已取消，未做任何更改。' }])
+        setPendingTrade(null)
+        setTradeMode(false)
+        return
+      }
+    }
+
+    // Trade mode: parse natural language
+    if (tradeMode) {
+      setMessages((prev) => [...prev, { role: 'user', content: message }])
+      setLoading(true)
+      try {
+        const result = await parsePortfolio(message)
+        if (result.status === 'ok' && result.parsed) {
+          setPendingTrade(result.parsed)
+          setMessages((prev) => [...prev, {
+            role: 'assistant',
+            content: `${result.preview}\n\n请回复「确认」执行，或「取消」放弃。`,
+          }])
+        } else {
+          setMessages((prev) => [...prev, { role: 'assistant', content: `解析失败: ${result.message || '请重新描述'}` }])
+        }
+        setConnected(true)
+      } catch (err) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
+    // Normal message flow
     setMessages((prev) => [...prev, { role: 'user', content: message }])
     setLoading(true)
 
     try {
-      // Check if it's a quick action that can use direct API + enhance
       const directResult = await handleDirectApi(message)
       if (directResult) {
-        setMessages((prev) => [
-          ...prev,
-          { role: 'assistant', content: directResult },
-        ])
+        setMessages((prev) => [...prev, { role: 'assistant', content: directResult }])
       } else {
         const resp = await sendChat(message)
         setMessages((prev) => [
@@ -70,7 +145,6 @@ export default function App() {
   }
 
   const handleDirectApi = async (message: string): Promise<string | null> => {
-    // Route specific quick actions to direct API calls with enhance
     if (message.includes('仓位')) {
       const data = await getPortfolio(enhance)
       return formatPortfolio(data)
@@ -83,7 +157,7 @@ export default function App() {
       const data = await getMarketSummary(enhance)
       return formatMarketSummary(data)
     }
-    return null // Fall through to chat API
+    return null
   }
 
   return (
@@ -93,10 +167,32 @@ export default function App() {
         <MessageList messages={messages} loading={loading} />
         <div ref={messagesEndRef} />
       </div>
-      <QuickActions onAction={handleSend} disabled={loading} />
-      <ChatInput onSend={handleSend} disabled={loading} />
+      {pendingTrade ? (
+        <div className="flex gap-2 px-4 py-2 shrink-0">
+          <button onClick={() => handleSend('__CONFIRM__')} className="flex-1 py-2 text-sm font-medium bg-green-600 hover:bg-green-500 text-white rounded-lg">✅ 确认记录</button>
+          <button onClick={() => handleSend('__CANCEL__')} className="flex-1 py-2 text-sm font-medium bg-red-600 hover:bg-red-500 text-white rounded-lg">❌ 取消</button>
+        </div>
+      ) : (
+        <QuickActions onAction={handleSend} disabled={loading} />
+      )}
+      <ChatInput onSend={handleSend} disabled={loading} placeholder={tradeMode ? '描述交易，如：买了100股NVDA 均价135' : undefined} />
     </div>
   )
+}
+
+function formatTradeHistory(data: { trades: Record<string, unknown>[]; count: number }): string {
+  if (!data.trades.length) return '暂无交易记录'
+  let text = `**最近 ${data.count} 条交易记录**:\n\n`
+  for (const t of data.trades) {
+    const action = t.action === 'buy' ? '买入' : t.action === 'sell' ? '卖出' : String(t.action)
+    if (t.ticker) {
+      text += `• ${t.timestamp} | ${action} ${t.ticker} ${t.shares}股 @ $${t.price}\n`
+      text += `  现金: $${Number(t.cash_before).toLocaleString()} → $${Number(t.cash_after).toLocaleString()}\n`
+    } else {
+      text += `• ${t.timestamp} | ${action} | ${t.notes || ''}\n`
+    }
+  }
+  return text
 }
 
 function formatMarketSummary(data: Record<string, unknown>): string {

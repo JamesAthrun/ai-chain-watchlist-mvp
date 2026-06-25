@@ -12,6 +12,7 @@ from app.api.routes_chat import router as chat_router
 from app.api.routes_knowledge import router as knowledge_router
 from app.api.routes_market import router as market_router
 from app.api.routes_portfolio import router as portfolio_router
+from app.core.database import init_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +24,9 @@ app = FastAPI(
     description="个人 AI 产业链盯盘助手，跟踪半导体/AI 产业链行情",
     version="0.1.0",
 )
+
+# Initialize SQLite database
+init_db()
 
 # Register routers
 app.include_router(market_router)
