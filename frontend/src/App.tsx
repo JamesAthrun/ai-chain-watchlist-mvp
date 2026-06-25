@@ -84,26 +84,33 @@ export default function App() {
 
     // Trade mode: parse natural language
     if (tradeMode) {
-      setMessages((prev) => [...prev, { role: 'user', content: message }])
-      setLoading(true)
-      try {
-        const result = await parsePortfolio(message)
-        if (result.status === 'ok' && result.parsed) {
-          setPendingTrade(result.parsed)
-          setMessages((prev) => [...prev, {
-            role: 'assistant',
-            content: `${result.preview}\n\n请回复「确认」执行，或「取消」放弃。`,
-          }])
-        } else {
-          setMessages((prev) => [...prev, { role: 'assistant', content: `解析失败: ${result.message || '请重新描述'}` }])
+      // If user clicks a non-trade quick action, exit trade mode and handle normally
+      const isQuickAction = message === '盯盘报告' || message === '睡前挂单计划' ||
+        message === '哪个板块强' || message === '不能接的标的' || message === '我的仓位情况'
+      if (isQuickAction) {
+        setTradeMode(false)
+      } else {
+        setMessages((prev) => [...prev, { role: 'user', content: message }])
+        setLoading(true)
+        try {
+          const result = await parsePortfolio(message)
+          if (result.status === 'ok' && result.parsed) {
+            setPendingTrade(result.parsed)
+            setMessages((prev) => [...prev, {
+              role: 'assistant',
+              content: `${result.preview}\n\n请回复「确认」执行，或「取消」放弃。`,
+            }])
+          } else {
+            setMessages((prev) => [...prev, { role: 'assistant', content: `解析失败: ${result.message || '请重新描述'}` }])
+          }
+          setConnected(true)
+        } catch (err) {
+          setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+        } finally {
+          setLoading(false)
         }
-        setConnected(true)
-      } catch (err) {
-        setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
-      } finally {
-        setLoading(false)
+        return
       }
-      return
     }
 
     // Normal message flow
