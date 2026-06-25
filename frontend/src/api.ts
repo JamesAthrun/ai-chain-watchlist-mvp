@@ -56,3 +56,29 @@ export async function getHealth(): Promise<{ status: string }> {
   if (!resp.ok) throw new Error(`API error: ${resp.status}`)
   return resp.json()
 }
+
+export async function parsePortfolio(text: string): Promise<{ status: string; parsed?: Record<string, unknown>; preview?: string; message?: string }> {
+  const resp = await fetch(`${API_BASE}/portfolio/parse`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+  return resp.json()
+}
+
+export async function confirmPortfolio(parsed: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const resp = await fetch(`${API_BASE}/portfolio/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parsed }),
+  })
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+  return resp.json()
+}
+
+export async function getTradeHistory(limit = 50): Promise<{ trades: Record<string, unknown>[]; count: number }> {
+  const resp = await fetch(`${API_BASE}/portfolio/history?limit=${limit}`)
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+  return resp.json()
+}

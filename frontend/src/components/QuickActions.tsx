@@ -9,6 +9,8 @@ const actions = [
   { label: '💪 强势', message: '哪个板块强' },
   { label: '⚠️ 避雷', message: '不能接的标的' },
   { label: '💼 仓位', message: '我的仓位情况' },
+  { label: '📝 记仓位', message: '__TRADE_INPUT__' },
+  { label: '📜 交易记录', message: '__TRADE_HISTORY__' },
 ]
 
 export default function QuickActions({ onAction, disabled }: QuickActionsProps) {
