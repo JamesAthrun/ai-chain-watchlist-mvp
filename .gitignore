@@ -31,6 +31,10 @@ ENV/
 
 # Vector DB data
 backend/app/data/
+
+# Node
+node_modules/
+frontend/dist/
 *.swo
 
 # Docker
