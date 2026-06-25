@@ -10,6 +10,13 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core.config_loader import CONFIG_DIR
+from app.core.vector_store import (
+    add_knowledge,
+    delete_document,
+    get_all_documents,
+    get_stats,
+    search_knowledge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,20 +28,50 @@ KNOWLEDGE_FILE = CONFIG_DIR / "knowledge.md"
 class KnowledgeInput(BaseModel):
     text: Optional[str] = None
     image_base64: Optional[str] = None  # base64 encoded image
+    source: Optional[str] = "manual"  # e.g. "xiaohongshu", "manual", "twitter"
+
+
+class KnowledgeSearchQuery(BaseModel):
+    query: str
+    top_k: int = 5
 
 
 @router.get("/knowledge")
 async def get_knowledge():
-    """Get current knowledge base content."""
+    """Get current knowledge base content (markdown file)."""
     if not KNOWLEDGE_FILE.exists():
         return {"content": "", "message": "Knowledge base is empty."}
     content = KNOWLEDGE_FILE.read_text(encoding="utf-8")
     return {"content": content}
 
 
+@router.get("/knowledge/vector")
+async def get_vector_knowledge():
+    """Get all documents in the vector store."""
+    docs = get_all_documents()
+    stats = get_stats()
+    return {"documents": docs, "stats": stats}
+
+
+@router.post("/knowledge/search")
+async def search_knowledge_endpoint(query: KnowledgeSearchQuery):
+    """Search the vector knowledge base for relevant content."""
+    results = search_knowledge(query.query, top_k=query.top_k)
+    return {"query": query.query, "results": results}
+
+
+@router.delete("/knowledge/vector/{doc_id}")
+async def delete_knowledge_doc(doc_id: str):
+    """Delete a document from the vector store."""
+    success = delete_document(doc_id)
+    if success:
+        return {"status": "ok", "deleted": doc_id}
+    return {"status": "error", "message": f"Failed to delete {doc_id}"}
+
+
 @router.post("/knowledge/upload")
 async def upload_knowledge(input_data: KnowledgeInput):
-    """Upload text or image to learn from and update knowledge base."""
+    """Upload text or image to learn from. Stores in both knowledge.md and vector DB."""
     if not input_data.text and not input_data.image_base64:
         return {"status": "error", "message": "Provide either text or image_base64"}
 
@@ -57,20 +94,27 @@ async def upload_knowledge(input_data: KnowledgeInput):
     if not new_points:
         return {"status": "error", "message": "Failed to extract knowledge points"}
 
-    # Step 3: Read existing knowledge and merge
+    # Step 3: Store in vector DB (each point as a separate document for better retrieval)
+    doc_ids = []
+    for point in new_points.split("\n"):
+        point = point.strip()
+        if point and len(point) > 10:  # skip empty/too-short lines
+            doc_id = add_knowledge(point, source=input_data.source or "manual")
+            doc_ids.append(doc_id)
+
+    # Step 4: Also update knowledge.md (as backup/overview)
     existing = ""
     if KNOWLEDGE_FILE.exists():
         existing = KNOWLEDGE_FILE.read_text(encoding="utf-8")
 
     merged = _merge_knowledge(api_key, existing, new_points)
-
-    # Step 4: Write back
     KNOWLEDGE_FILE.write_text(merged, encoding="utf-8")
 
     return {
         "status": "ok",
         "new_points": new_points,
-        "message": "Knowledge base updated successfully",
+        "vector_docs_added": len(doc_ids),
+        "message": "Knowledge base updated (markdown + vector DB)",
     }
 
 
