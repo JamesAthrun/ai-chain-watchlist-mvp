@@ -20,6 +20,7 @@ export interface MarketSummary {
   }[]
   add_candidates: { ticker: string }[]
   do_not_buy: { ticker: string }[]
+  llm_analysis?: string | null
 }
 
 export async function sendChat(message: string): Promise<ChatResponse> {
@@ -32,8 +33,20 @@ export async function sendChat(message: string): Promise<ChatResponse> {
   return resp.json()
 }
 
-export async function getMarketSummary(): Promise<MarketSummary> {
-  const resp = await fetch(`${API_BASE}/market/summary`)
+export async function getMarketSummary(enhance = false): Promise<MarketSummary> {
+  const resp = await fetch(`${API_BASE}/market/summary?enhance=${enhance}`)
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+  return resp.json()
+}
+
+export async function getSleepPlan(enhance = false): Promise<Record<string, unknown>> {
+  const resp = await fetch(`${API_BASE}/sleep-plan?enhance=${enhance}`)
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+  return resp.json()
+}
+
+export async function getPortfolio(enhance = false): Promise<Record<string, unknown>> {
+  const resp = await fetch(`${API_BASE}/portfolio?enhance=${enhance}`)
   if (!resp.ok) throw new Error(`API error: ${resp.status}`)
   return resp.json()
 }

@@ -4,10 +4,11 @@ import json
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from app.core.config_loader import CONFIG_DIR, load_portfolio
+from app.core.llm_client import analyze_market
 from app.core.portfolio import analyze_portfolio
 
 router = APIRouter(prefix="/api")
@@ -37,10 +38,14 @@ class TradeInput(BaseModel):
 
 
 @router.get("/portfolio")
-async def get_portfolio():
+async def get_portfolio(enhance: bool = Query(False)):
     portfolio_data = load_portfolio()
     summary = analyze_portfolio(portfolio_data)
-    return summary.model_dump()
+    result = summary.model_dump()
+    if enhance:
+        analysis = analyze_market(json.dumps(result, ensure_ascii=False, default=str), "portfolio")
+        result["llm_analysis"] = analysis
+    return result
 
 
 @router.put("/portfolio")

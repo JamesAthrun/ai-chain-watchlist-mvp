@@ -1,9 +1,10 @@
 """Market-related API routes."""
 
+import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.core.config_loader import (
     get_all_tickers,
@@ -11,6 +12,7 @@ from app.core.config_loader import (
     load_rules,
     load_watchlist,
 )
+from app.core.llm_client import analyze_market
 from app.core.market_data import fetch_snapshots
 from app.core.models import MarketSummary, TickerSnapshot
 from app.core.portfolio import analyze_portfolio
@@ -62,9 +64,13 @@ async def health():
 
 
 @router.get("/market/summary")
-async def market_summary():
+async def market_summary(enhance: bool = Query(False)):
     snapshots, summary = _get_or_refresh()
-    return summary.model_dump()
+    result = summary.model_dump()
+    if enhance:
+        analysis = analyze_market(json.dumps(result, ensure_ascii=False, default=str), "market")
+        result["llm_analysis"] = analysis
+    return result
 
 
 @router.get("/watchlist")
@@ -74,7 +80,7 @@ async def get_watchlist():
 
 
 @router.get("/sleep-plan")
-async def sleep_plan():
+async def sleep_plan(enhance: bool = Query(False)):
     snapshots, summary = _get_or_refresh()
     rules = load_rules()
     watchlist = load_watchlist()
@@ -84,7 +90,11 @@ async def sleep_plan():
     plan = generate_sleep_plan_with_prices(
         summary, portfolio, rules, watchlist, snapshots
     )
-    return plan.model_dump()
+    result = plan.model_dump()
+    if enhance:
+        analysis = analyze_market(json.dumps(result, ensure_ascii=False, default=str), "sleep_plan")
+        result["llm_analysis"] = analysis
+    return result
 
 
 @router.post("/refresh")
