@@ -10,3 +10,7 @@ python-dotenv
 requests
 pydantic
 chromadb
+
+# dev/test
+pytest
+httpx
