@@ -9,3 +9,4 @@ tabulate
 python-dotenv
 requests
 pydantic
+chromadb

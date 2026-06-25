@@ -102,14 +102,25 @@ async def chat(req: ChatRequest):
         )
         answer = enhance_report(report)
     else:
-        # Free chat with market context
+        # Free chat with market context + RAG knowledge retrieval
         import json
+        from app.core.vector_store import search_knowledge
+
         market_context = json.dumps({
             "market_regime": summary.market_regime,
             "benchmark_strength": {k: v for k, v in summary.benchmark_strength.items()} if hasattr(summary, 'benchmark_strength') else {},
             "bucket_scores": [{"name": bs.label, "avg_pct": bs.avg_pct_change} for bs in summary.bucket_scores],
         }, ensure_ascii=False)
-        answer = free_chat(msg, market_context)
+
+        # Retrieve relevant knowledge from vector store
+        relevant_docs = search_knowledge(msg, top_k=3)
+        knowledge_context = ""
+        if relevant_docs:
+            knowledge_context = "\n\n相关策略知识:\n" + "\n".join(
+                f"- {doc['text']}" for doc in relevant_docs
+            )
+
+        answer = free_chat(msg, market_context + knowledge_context)
 
     return ChatResponse(
         answer=answer,
