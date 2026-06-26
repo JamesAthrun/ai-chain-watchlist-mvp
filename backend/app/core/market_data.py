@@ -13,19 +13,26 @@ logger = logging.getLogger(__name__)
 def fetch_snapshots(tickers: list[str]) -> dict[str, TickerSnapshot]:
     """Fetch market data for a list of tickers and return snapshots."""
     results: dict[str, TickerSnapshot] = {}
+    logger.info(f"[market_data] Starting fetch for {len(tickers)} tickers: {tickers}")
 
     for ticker in tickers:
         try:
             snap = _fetch_single(ticker)
+            if snap.data_missing:
+                logger.warning(f"[market_data] {ticker} -> data_missing=True, error={snap.error}")
+            else:
+                logger.info(f"[market_data] {ticker} -> price={snap.last_price:.2f}, vol={snap.volume}")
             results[ticker] = snap
         except Exception as e:
-            logger.warning(f"Failed to fetch {ticker}: {e}")
+            logger.warning(f"[market_data] {ticker} -> EXCEPTION: {e}")
             results[ticker] = TickerSnapshot(
                 ticker=ticker,
                 data_missing=True,
                 error=str(e),
             )
 
+    missing = [t for t, s in results.items() if s.data_missing]
+    logger.info(f"[market_data] Done. {len(results)-len(missing)}/{len(results)} success, missing: {missing}")
     return results
 
 

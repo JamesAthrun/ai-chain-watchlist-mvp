@@ -27,14 +27,17 @@ def enhance_report(
     provider = get_llm_provider()
 
     if provider == "none" or provider == "":
+        logger.info("[llm] Provider=none, skipping LLM enhance")
         return template_report
 
     if provider == "deepseek":
+        logger.info("[llm] Calling DeepSeek enhance...")
         return _call_deepseek(template_report, market_summary_json)
     elif provider == "openai":
+        logger.info("[llm] Calling OpenAI enhance...")
         return _call_openai(template_report, market_summary_json)
     else:
-        logger.warning(f"Unknown LLM provider: {provider}, returning template report")
+        logger.warning(f"[llm] Unknown provider: {provider}, returning template report")
         return template_report
 
 
@@ -78,15 +81,13 @@ def _call_deepseek(template_report: str, context: str) -> str:
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         if content:
+            logger.info(f"[llm] DeepSeek returned {len(content)} chars")
             return content
+        logger.warning("[llm] DeepSeek returned empty content")
         return template_report
     except Exception as e:
-        logger.warning(f"DeepSeek API call failed: {e}")
+        logger.warning(f"[llm] DeepSeek API call failed: {e}")
         return template_report
-
-
-def _call_openai(template_report: str, context: str) -> str:
-    """Call OpenAI API."""
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         logger.info("OPENAI_API_KEY not set, returning template report")
