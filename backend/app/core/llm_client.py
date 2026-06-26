@@ -72,7 +72,7 @@ def _call_deepseek(template_report: str, context: str) -> str:
                 "max_tokens": 2000,
                 "temperature": 0.3,
             },
-            timeout=30,
+            timeout=10,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -118,7 +118,7 @@ def _call_openai(template_report: str, context: str) -> str:
                 "max_tokens": 2000,
                 "temperature": 0.3,
             },
-            timeout=30,
+            timeout=10,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -312,7 +312,7 @@ def _call_llm_chat(base_url: str, api_key: str, model: str,
                 "max_tokens": 2000,
                 "temperature": 0.7,
             },
-            timeout=30,
+            timeout=10,
         )
         resp.raise_for_status()
         data = resp.json()
