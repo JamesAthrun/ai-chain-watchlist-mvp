@@ -11,7 +11,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [regime, setRegime] = useState('')
   const [connected, setConnected] = useState(false)
-  const [enhance, setEnhance] = useState(true)
+  const [enhance, setEnhance] = useState(false)
   const [pendingTrade, setPendingTrade] = useState<Record<string, unknown> | null>(null)
   const [tradeMode, setTradeMode] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
