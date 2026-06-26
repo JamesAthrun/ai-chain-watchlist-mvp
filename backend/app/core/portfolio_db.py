@@ -199,6 +199,47 @@ def get_trade_history(limit: int = 50, ticker: str = None) -> list[dict]:
         conn.close()
 
 
+def adjust_cash(amount: float, reason: str = "") -> dict:
+    """Add or subtract cash (e.g. deposit, withdrawal, dividend).
+
+    Positive amount = add cash, negative = withdraw.
+    """
+    conn = get_db()
+    try:
+        meta = conn.execute("SELECT cash FROM portfolio_meta WHERE id = 1").fetchone()
+        cash_before = meta["cash"] if meta else 0
+        cash_after = cash_before + amount
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE portfolio_meta SET cash = ?, updated_at = ? WHERE id = 1",
+            (round(cash_after, 2), now_str),
+        )
+        _recalculate_account_value(conn)
+
+        action = "deposit" if amount >= 0 else "withdrawal"
+        conn.execute(
+            """INSERT INTO trade_log
+               (action, notes, cash_before, cash_after)
+               VALUES (?, ?, ?, ?)""",
+            (action, reason or f"Cash adjustment: {amount:+.2f}", cash_before, round(cash_after, 2)),
+        )
+
+        conn.commit()
+        logger.info(f"Cash adjusted: {amount:+.2f} ({reason}), {cash_before:.2f} -> {cash_after:.2f}")
+
+        return {
+            "status": "ok",
+            "action": action,
+            "amount": amount,
+            "cash_before": round(cash_before, 2),
+            "cash_after": round(cash_after, 2),
+            "reason": reason,
+        }
+    finally:
+        conn.close()
+
+
 def _recalculate_account_value(conn):
     """Recalculate account_value = cash + sum(shares * avg_cost)."""
     meta = conn.execute("SELECT cash FROM portfolio_meta WHERE id = 1").fetchone()

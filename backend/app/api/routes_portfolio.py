@@ -13,6 +13,7 @@ from app.core.portfolio_db import (
     get_trade_history,
     record_trade as db_record_trade,
     set_portfolio as db_set_portfolio,
+    adjust_cash as db_adjust_cash,
 )
 
 router = APIRouter(prefix="/api")
@@ -87,6 +88,18 @@ async def portfolio_history(limit: int = Query(50), ticker: Optional[str] = None
     """Get trade history."""
     history = get_trade_history(limit=limit, ticker=ticker)
     return {"trades": history, "count": len(history)}
+
+
+class CashAdjustInput(BaseModel):
+    amount: float
+    reason: Optional[str] = ""
+
+
+@router.post("/portfolio/cash")
+async def adjust_cash(req: CashAdjustInput):
+    """Add or withdraw cash. Positive = deposit, negative = withdrawal."""
+    result = db_adjust_cash(req.amount, req.reason or "")
+    return result
 
 
 @router.post("/portfolio/parse")

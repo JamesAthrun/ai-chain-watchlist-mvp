@@ -202,9 +202,12 @@ def fetch_snapshots(tickers: list[str]) -> dict[str, TickerSnapshot]:
             fetch_fn = _PROVIDER_MAP[provider_name]
             try:
                 snap = fetch_fn(ticker)
-                if snap is not None:
+                if snap is not None and snap.last_price > 0:
                     used_provider = provider_name
                     break
+                elif snap is not None and snap.last_price == 0:
+                    logger.debug(f"[market_data] {ticker} -> {provider_name} returned price=0, trying next")
+                    snap = None  # treat as failure, try next provider
             except Exception as e:
                 logger.debug(f"[market_data] {ticker} -> {provider_name} FAILED: {e}")
                 continue

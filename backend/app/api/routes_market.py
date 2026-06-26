@@ -18,6 +18,9 @@ from app.core.models import MarketSummary, TickerSnapshot
 from app.core.portfolio import analyze_portfolio
 from app.core.report import generate_sleep_plan_with_prices
 from app.core.scoring import build_market_summary
+from app.core.report_dashboard import generate_dashboard_report
+from app.core.stock_scorer import score_all_stocks
+from app.core.limit_calculator import generate_daily_limits
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,79 @@ async def sleep_plan(enhance: bool = Query(False)):
     return result
 
 
+@router.get("/daily-plan")
+async def daily_plan():
+    """Generate unified daily plan: market regime → scoring → limit prices → amounts.
+
+    This is the 🎯 每日计划 endpoint combining:
+    1. Market regime assessment
+    2. Technical analysis (ATR, Fibonacci, support/resistance)
+    3. Stock scoring (category + relative_strength + support + open)
+    4. Limit price calculation (3-method median, 2 tiers)
+    5. Order amount calculation (with position constraints)
+    """
+    from app.core.technical_analysis import analyze_batch_technical
+
+    snapshots, summary = _get_or_refresh()
+    rules = load_rules()
+    watchlist = load_watchlist()
+    portfolio_data = get_portfolio_data()
+    portfolio = analyze_portfolio(portfolio_data, snapshots)
+    account_value = portfolio.account_value or rules.get("account", {}).get("base_capital", 40000)
+
+    # Get sector benchmark change for relative strength
+    smh_snap = snapshots.get("SMH")
+    sector_pct = smh_snap.pct_change_from_prev_close if smh_snap and not smh_snap.data_missing else 0.0
+
+    # Run TA on all watchlist tickers
+    all_tickers = [t for t in snapshots.keys() if not t.startswith("^")]
+    ta_results = analyze_batch_technical(all_tickers)
+
+    # Score all stocks
+    scored = score_all_stocks(
+        snapshots=snapshots,
+        ta_results=ta_results,
+        sector_pct_change=sector_pct,
+        portfolio=portfolio,
+        watchlist=watchlist,
+    )
+
+    # Map market regime from summary to limit calculator regime
+    regime_map = {
+        "market_strong": "strong",
+        "market_neutral": "neutral",
+        "market_weak": "weak",
+        "semi_strong_qqq_weak": "neutral",
+    }
+    market_regime = regime_map.get(summary.market_regime, "neutral")
+
+    # Generate limit orders
+    orders = generate_daily_limits(
+        scored_stocks=scored,
+        ta_results=ta_results,
+        snapshots=snapshots,
+        market_regime=market_regime,
+        account_value=account_value,
+        portfolio=portfolio,
+    )
+
+    return {
+        "market_regime": summary.market_regime,
+        "market_regime_label": {
+            "market_strong": "强势",
+            "market_neutral": "中性",
+            "market_weak": "弱势",
+            "semi_strong_qqq_weak": "半导体强/QQQ弱",
+        }.get(summary.market_regime, "未知"),
+        "sector_pct_change": round(sector_pct, 2),
+        "scored_stocks": scored[:10],  # top 10 by score
+        "limit_orders": orders,
+        "total_order_amount": sum(o["amount_l1"] for o in orders),
+        "max_daily_amount": account_value * 0.30,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+
+
 @router.post("/refresh")
 async def refresh():
     try:
@@ -107,3 +183,117 @@ async def refresh():
     except Exception as e:
         logger.error(f"Refresh failed: {e}")
         return {"status": "error", "message": str(e)}
+
+
+@router.get("/market/dashboard")
+async def market_dashboard(enhance: bool = Query(False)):
+    """Generate dashboard report with local technical analysis + optional LLM.
+
+    - enhance=false: Pure local TA (MA/RSI/support/resistance) - fast, free
+    - enhance=true: Local TA + LLM structured analysis per top mover - richer but slower
+    """
+    snapshots, summary = _get_or_refresh()
+    rules = load_rules()
+    portfolio_data = get_portfolio_data()
+    portfolio = analyze_portfolio(portfolio_data, snapshots)
+
+    report = generate_dashboard_report(
+        summary=summary,
+        snapshots=snapshots,
+        portfolio=portfolio,
+        rules=rules,
+        use_llm=enhance,
+    )
+    return {"report": report, "generated_at": _cache.get("last_refresh")}
+
+
+@router.get("/market/technical/{ticker}")
+async def ticker_technical(ticker: str):
+    """Get technical analysis for a single ticker (MA, RSI, MACD, support/resistance)."""
+    from app.core.technical_analysis import analyze_ticker_technical
+
+    result = analyze_ticker_technical(ticker.upper())
+    if not result.data_available:
+        return {"ticker": ticker.upper(), "error": result.error or "No data available"}
+    return result.to_dict()
+
+
+@router.get("/market/score/{ticker}")
+async def ticker_score(ticker: str):
+    """Score a single ticker for limit order candidacy.
+
+    Works for any valid US stock ticker, not just watchlist stocks.
+    Returns score, category, limit prices, and suggested amount.
+    """
+    from app.core.technical_analysis import analyze_ticker_technical
+    from app.core.market_data import fetch_snapshots as fetch_single
+    from app.core.stock_scorer import score_stock, get_category
+    from app.core.limit_calculator import calculate_limit_prices, calculate_order_amount
+
+    ticker = ticker.upper()
+    snapshots, summary = _get_or_refresh()
+    rules = load_rules()
+    watchlist = load_watchlist()
+    portfolio_data = get_portfolio_data()
+    portfolio = analyze_portfolio(portfolio_data, snapshots)
+    account_value = portfolio.account_value or rules.get("account", {}).get("base_capital", 40000)
+
+    # Get snapshot - use cached if available, otherwise fetch
+    snap = snapshots.get(ticker)
+    if not snap:
+        fetched = fetch_single([ticker])
+        snap = fetched.get(ticker)
+        if not snap:
+            return {"ticker": ticker, "error": "无法获取价格数据"}
+
+    # Run TA
+    ta = analyze_ticker_technical(ticker)
+
+    # Determine watchlist role
+    role = "beta"
+    for bucket_data in watchlist.get("buckets", {}).values():
+        if ticker in bucket_data.get("tickers", []):
+            role = bucket_data.get("role", "beta")
+            break
+
+    # Get sector benchmark
+    smh_snap = snapshots.get("SMH")
+    sector_pct = smh_snap.pct_change_from_prev_close if smh_snap and not smh_snap.data_missing else 0.0
+
+    # Score
+    scored = score_stock(ticker, snap, ta, sector_pct, portfolio, role)
+
+    # Calculate limits
+    price = ta.current_price if ta.data_available else snap.last_price
+    category = scored["category"]
+    limits = calculate_limit_prices(ticker, category, price, ta)
+
+    # Market regime for amount calc
+    regime_map = {
+        "market_strong": "strong", "market_neutral": "neutral",
+        "market_weak": "weak", "semi_strong_qqq_weak": "neutral",
+    }
+    market_regime = regime_map.get(summary.market_regime, "neutral")
+
+    amounts = calculate_order_amount(
+        ticker, category, market_regime, scored["score"], account_value, portfolio
+    )
+
+    return {
+        "ticker": ticker,
+        "current_price": round(price, 2),
+        "score": scored["score"],
+        "category": scored["category"],
+        "chain": scored["chain"],
+        "action": scored["action"],
+        "reasons": scored["reasons"],
+        "limit_1": limits["limit_1"],
+        "limit_2": limits["limit_2"],
+        "limit_methods": limits["methods"],
+        "limit_reason": limits["reason"],
+        "amount_l1": amounts["amount_l1"],
+        "amount_l2": amounts["amount_l2"],
+        "amount_multipliers": amounts["multipliers"],
+        "capped_reason": amounts["capped_reason"],
+        "ta": ta.to_dict() if ta.data_available else None,
+    }
