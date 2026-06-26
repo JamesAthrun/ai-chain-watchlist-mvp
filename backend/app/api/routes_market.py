@@ -34,6 +34,7 @@ _cache: dict = {
 def _refresh_data() -> tuple[dict[str, TickerSnapshot], MarketSummary]:
     """Refresh market data and build summary."""
     tickers = get_all_tickers()
+    logger.info(f"[routes_market] _refresh_data called, {len(tickers)} tickers")
     watchlist = load_watchlist()
     rules = load_rules()
 
@@ -43,6 +44,7 @@ def _refresh_data() -> tuple[dict[str, TickerSnapshot], MarketSummary]:
     _cache["snapshots"] = snapshots
     _cache["summary"] = summary
     _cache["last_refresh"] = datetime.now(timezone.utc).isoformat()
+    logger.info(f"[routes_market] Refresh done at {_cache['last_refresh']}")
 
     return snapshots, summary
 
