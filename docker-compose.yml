@@ -11,4 +11,18 @@ services:
       - ./backend/.env
     volumes:
       - ./backend/app/config:/app/app/config
+      - backend-data:/app/app/data
     restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend-data:
