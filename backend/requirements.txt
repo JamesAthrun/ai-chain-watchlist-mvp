@@ -9,6 +9,7 @@ tabulate
 python-dotenv
 requests
 pydantic
+jinja2
 chromadb
 
 # dev/test

@@ -7,8 +7,10 @@ def analyze_portfolio(
     portfolio_data: dict,
     snapshots: dict[str, TickerSnapshot] | None = None,
 ) -> PortfolioSummary:
-    """Analyze portfolio and compute exposures."""
-    account_value = portfolio_data.get("account_value", 0.0)
+    """Analyze portfolio and compute exposures.
+
+    account_value is dynamically calculated as cash + market value of positions.
+    """
     cash = portfolio_data.get("cash", 0.0)
 
     positions: list[PositionInfo] = []
@@ -57,6 +59,9 @@ def analyze_portfolio(
         single_ticker_exposure[ticker] = (
             single_ticker_exposure.get(ticker, 0.0) + current_value
         )
+
+    # Dynamic account value = cash + market value of all positions
+    account_value = cash + invested_value
 
     cash_pct = (cash / account_value * 100) if account_value > 0 else 0.0
     position_pct = (invested_value / account_value * 100) if account_value > 0 else 0.0

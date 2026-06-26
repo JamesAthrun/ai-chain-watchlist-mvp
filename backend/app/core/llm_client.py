@@ -322,3 +322,87 @@ def _call_llm_chat(base_url: str, api_key: str, model: str,
     except Exception as e:
         logger.warning(f"LLM chat call failed: {e}")
         return f"对话请求失败: {e}"
+
+
+def analyze_structured(
+    ticker: str,
+    snapshot_json: str,
+    technical_json: str,
+    market_regime: str = "unknown",
+) -> Optional[dict]:
+    """Call LLM to get structured JSON analysis for a single ticker.
+
+    Unlike enhance_report (free text), this returns a parsed dict with fixed schema:
+    {
+        "sentiment_score": 0-100,
+        "signal": "buy" | "hold" | "sell" | "avoid",
+        "confidence": 0-100,
+        "short_summary": "一句话结论",
+        "risks": ["风险1", "风险2"],
+        "catalysts": ["催化1", "催化2"],
+        "suggested_action": "具体操作建议"
+    }
+
+    Returns None if LLM unavailable or parse fails. The caller should
+    still use local technical data as the primary source.
+    """
+    import json as _json
+
+    provider = get_llm_provider()
+    if provider == "none" or provider == "":
+        return None
+
+    system_prompt = (
+        "你是一位专业的美股 AI 半导体产业链分析师。请基于以下技术指标和实时行情，"
+        "对该标的给出结构化分析。\n\n"
+        "严格返回以下 JSON 格式，不要添加其他文字：\n"
+        "{\n"
+        '  "sentiment_score": 0到100的整数(50为中性,越高越看多),\n'
+        '  "signal": "buy"或"hold"或"sell"或"avoid",\n'
+        '  "confidence": 0到100的整数(对判断的信心),\n'
+        '  "short_summary": "一句话核心结论(20字内)",\n'
+        '  "risks": ["最多3个风险因素"],\n'
+        '  "catalysts": ["最多3个催化因素"],\n'
+        '  "suggested_action": "具体操作建议(30字内)"\n'
+        "}\n\n"
+        "规则：\n"
+        "- RSI > 70 且 MACD 柱缩小 → 偏 sell/avoid\n"
+        "- RSI < 30 且 MA20 支撑 → 偏 buy\n"
+        "- 均线多头排列 + 量比 > 1.5 → 强势 buy\n"
+        "- 均线空头排列 → sell/avoid\n"
+        "- 当前市场弱势时，对 buy 信号降级\n"
+        "- 只返回纯 JSON\n"
+    )
+
+    user_msg = (
+        f"标的: {ticker}\n"
+        f"市场环境: {market_regime}\n"
+        f"实时行情: {snapshot_json}\n"
+        f"技术指标: {technical_json}\n"
+    )
+
+    if provider == "deepseek":
+        result = _call_llm_chat(
+            "https://api.deepseek.com", os.getenv("DEEPSEEK_API_KEY", ""),
+            os.getenv("DEEPSEEK_MODEL", "deepseek-chat"), system_prompt, user_msg
+        )
+    elif provider == "openai":
+        result = _call_llm_chat(
+            "https://api.openai.com", os.getenv("OPENAI_API_KEY", ""),
+            os.getenv("OPENAI_MODEL", "gpt-4o-mini"), system_prompt, user_msg
+        )
+    else:
+        return None
+
+    if result.startswith("API Key 未配置") or result.startswith("对话请求失败"):
+        return None
+
+    try:
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+            cleaned = cleaned.rsplit("```", 1)[0].strip()
+        return _json.loads(cleaned)
+    except _json.JSONDecodeError:
+        logger.warning(f"[llm] Failed to parse structured analysis for {ticker}: {result[:200]}")
+        return None

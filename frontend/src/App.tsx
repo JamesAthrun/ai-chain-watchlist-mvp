@@ -4,7 +4,7 @@ import MessageList from './components/MessageList'
 import type { Message } from './components/MessageList'
 import QuickActions from './components/QuickActions'
 import ChatInput from './components/ChatInput'
-import { sendChat, getHealth, getMarketSummary, getSleepPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory } from './api'
+import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore } from './api'
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -38,12 +38,40 @@ export default function App() {
       ])
       return
     }
+    if (message === '__DASHBOARD__') {
+      setMessages((prev) => [...prev, { role: 'user', content: '🎯 仪表盘报告' }])
+      setLoading(true)
+      try {
+        const data = await getDashboard(enhance)
+        setMessages((prev) => [...prev, { role: 'assistant', content: data.report }])
+        setConnected(true)
+      } catch (err) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
     if (message === '__TRADE_HISTORY__') {
       setMessages((prev) => [...prev, { role: 'user', content: '查看交易记录' }])
       setLoading(true)
       try {
         const data = await getTradeHistory(20)
         setMessages((prev) => [...prev, { role: 'assistant', content: formatTradeHistory(data) }])
+        setConnected(true)
+      } catch (err) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+    if (message === '__DAILY_PLAN__') {
+      setMessages((prev) => [...prev, { role: 'user', content: '🎯 每日计划' }])
+      setLoading(true)
+      try {
+        const data = await getDailyPlan()
+        setMessages((prev) => [...prev, { role: 'assistant', content: formatDailyPlan(data) }])
         setConnected(true)
       } catch (err) {
         setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
@@ -156,6 +184,22 @@ export default function App() {
       const data = await getPortfolio(enhance)
       return formatPortfolio(data)
     }
+    // Handle "加现金 5000" or "入金 2000" or "取现 1000"
+    const cashMatch = message.match(/(?:加现金|入金|存入|deposit)\s*\$?(\d+(?:\.\d+)?)/i) || message.match(/(?:取现|取出|withdrawal)\s*\$?(\d+(?:\.\d+)?)/i)
+    if (cashMatch) {
+      const isWithdraw = /取现|取出|withdrawal/i.test(message)
+      const amount = isWithdraw ? -parseFloat(cashMatch[1]) : parseFloat(cashMatch[1])
+      const resp = await fetch('/api/portfolio/cash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount, reason: message }),
+      })
+      const data = await resp.json()
+      if (data.status === 'ok') {
+        return `✅ ${isWithdraw ? '取出' : '入金'} $${Math.abs(amount).toLocaleString()}\n现金: $${data.cash_before.toLocaleString()} → $${data.cash_after.toLocaleString()}`
+      }
+      return `❌ 操作失败: ${data.message || '未知错误'}`
+    }
     if (message.includes('挂单') || message.includes('睡前') || message.includes('睡觉')) {
       const data = await getSleepPlan(enhance)
       return formatSleepPlan(data)
@@ -163,6 +207,24 @@ export default function App() {
     if (message.includes('盯盘') || message.includes('报告') || message.includes('总结')) {
       const data = await getMarketSummary(enhance)
       return formatMarketSummary(data)
+    }
+    if (message.includes('仪表盘') || message.includes('dashboard')) {
+      const data = await getDashboard(enhance)
+      return data.report
+    }
+    // Handle "评分 MU" or "MU评分" or "score NVDA" style queries
+    const scoreMatch = message.match(/(?:评分|score|打分|挂单价)\s*([A-Z]{1,5})/i) || message.match(/([A-Z]{2,5})\s*(?:评分|打分|score|几分|多少分)/i)
+    if (scoreMatch) {
+      const ticker = scoreMatch[1].toUpperCase()
+      const data = await getTickerScore(ticker)
+      return formatTickerScore(data)
+    }
+    // Handle "查 NVDA" or "NVDA技术" style queries for single ticker TA
+    const taMatch = message.match(/(?:查|技术|分析)\s*([A-Z]{1,5})/i) || message.match(/([A-Z]{2,5})\s*(?:技术|支撑|压力|RSI)/i)
+    if (taMatch) {
+      const ticker = taMatch[1].toUpperCase()
+      const data = await getTechnical(ticker)
+      return formatTechnical(data)
     }
     return null
   }
@@ -224,11 +286,11 @@ function formatMarketSummary(data: Record<string, unknown>): string {
 }
 
 function formatSleepPlan(data: Record<string, unknown>): string {
-  const d = data as { market_regime?: string; orders?: { ticker: string; limit_price: number; discount_pct: number }[]; llm_analysis?: string }
-  let text = `**挂单计划** (市场: ${d.market_regime || 'unknown'})\n\n`
+  const d = data as { market_regime?: string; orders?: { ticker: string; bucket_label: string; suggested_limit_low: number; suggested_limit_high: number; max_dollars: number; reason: string }[]; llm_analysis?: string }
+  let text = `**😴 睡觉挂单计划** (市场: ${d.market_regime || 'unknown'})\n\n`
   if (d.orders?.length) {
     for (const o of d.orders) {
-      text += `• ${o.ticker}: $${o.limit_price.toFixed(2)} (折扣 ${o.discount_pct}%)\n`
+      text += `• **${o.ticker}** (${o.bucket_label}): $${o.suggested_limit_low.toFixed(2)} - $${o.suggested_limit_high.toFixed(2)}, 最多$${o.max_dollars}\n`
     }
   } else {
     text += '当前无挂单建议\n'
@@ -236,6 +298,50 @@ function formatSleepPlan(data: Record<string, unknown>): string {
   if (d.llm_analysis) {
     text += `\n---\n**🤖 AI 建议**:\n${d.llm_analysis}`
   }
+  return text
+}
+
+function formatDailyPlan(data: Record<string, unknown>): string {
+  const d = data as {
+    market_regime_label?: string
+    sector_pct_change?: number
+    scored_stocks?: { ticker: string; score: number; category: string; action: string; reasons: string[] }[]
+    limit_orders?: { ticker: string; score: number; category: string; current_price: number; limit_1: number; limit_2: number; amount_l1: number; amount_l2: number; limit_reason: string; reasons: string[]; capped_reason?: string }[]
+    total_order_amount?: number
+    max_daily_amount?: number
+  }
+
+  let text = `## 🎯 每日计划\n\n`
+  text += `**市场**: ${d.market_regime_label || '未知'} | **板块(SMH)**: ${(d.sector_pct_change || 0) >= 0 ? '+' : ''}${(d.sector_pct_change || 0).toFixed(2)}%\n\n`
+
+  // Limit orders (the main output)
+  if (d.limit_orders?.length) {
+    text += `### 📋 挂单计划 (${d.limit_orders.length}只)\n\n`
+    for (const o of d.limit_orders) {
+      const catLabel = { core: '核心', semi_core: '半核心', cyclical: '周期', high_beta: '高弹性', beta: '弹性' }[o.category] || o.category
+      text += `**${o.ticker}** [${catLabel}] 评分${o.score}\n`
+      text += `  现价 $${o.current_price} → 浅挂 $${o.limit_1.toFixed(2)} ($${o.amount_l1}) | 深挂 $${o.limit_2.toFixed(2)} ($${o.amount_l2})\n`
+      text += `  💡 ${o.limit_reason}`
+      if (o.reasons?.length) text += ` | ${o.reasons.join(', ')}`
+      if (o.capped_reason) text += ` ⚠️${o.capped_reason}`
+      text += '\n\n'
+    }
+    text += `---\n💰 总挂单: $${(d.total_order_amount || 0).toLocaleString()} / 上限$${(d.max_daily_amount || 0).toLocaleString()}\n\n`
+  } else {
+    text += '### 无挂单建议\n当前无满足条件的候选股\n\n'
+  }
+
+  // Top scored stocks summary
+  if (d.scored_stocks?.length) {
+    text += `### 📊 评分排行 (前10)\n`
+    for (const s of d.scored_stocks.slice(0, 10)) {
+      const icon = s.action === 'preferred_buy' ? '🟢' : s.action === 'buy_candidate' ? '🟡' : s.action === 'watch_only' ? '⚪' : '🔴'
+      text += `${icon} **${s.ticker}** ${s.score}分 (${s.category})`
+      if (s.reasons?.length) text += ` - ${s.reasons.join(', ')}`
+      text += '\n'
+    }
+  }
+
   return text
 }
 
@@ -254,6 +360,65 @@ function formatPortfolio(data: Record<string, unknown>): string {
   }
   if (d.llm_analysis) {
     text += `\n---\n**🤖 AI 建议**:\n${d.llm_analysis}`
+  }
+  return text
+}
+
+function formatTickerScore(data: Record<string, unknown>): string {
+  const d = data as {
+    ticker?: string; error?: string; current_price?: number; score?: number
+    category?: string; chain?: string; action?: string; reasons?: string[]
+    limit_1?: number; limit_2?: number; limit_reason?: string
+    amount_l1?: number; amount_l2?: number; capped_reason?: string
+    amount_multipliers?: { market?: number; stock?: number; position?: number }
+  }
+  if (d.error) return `**${d.ticker}** 评分失败: ${d.error}`
+
+  const catLabel = { core: '核心', semi_core: '半核心', cyclical: '周期', high_beta: '高弹性', beta: '弹性' }[d.category || ''] || d.category
+  const actionLabel = { preferred_buy: '🟢 优先买入', buy_candidate: '🟡 挂单候选', watch_only: '⚪ 仅观察', do_not_buy: '🔴 不建议' }[d.action || ''] || d.action
+
+  let text = `## ${d.ticker} 评分报告\n\n`
+  text += `**评分**: ${d.score} | **类别**: ${catLabel} | **判定**: ${actionLabel}\n`
+  if (d.chain) text += `**产业链**: ${d.chain}\n`
+  text += `**现价**: $${d.current_price}\n\n`
+
+  if (d.reasons?.length) text += `**理由**: ${d.reasons.join(', ')}\n\n`
+
+  text += `### 挂单建议\n`
+  text += `• 浅挂(Tier1): **$${d.limit_1?.toFixed(2)}** → $${d.amount_l1}\n`
+  text += `• 深挂(Tier2): **$${d.limit_2?.toFixed(2)}** → $${d.amount_l2}\n`
+  text += `• 方法: ${d.limit_reason}\n`
+
+  if (d.amount_multipliers) {
+    text += `• 乘数: 市场×${d.amount_multipliers.market} 个股×${d.amount_multipliers.stock} 仓位×${d.amount_multipliers.position}\n`
+  }
+  if (d.capped_reason) text += `• ⚠️ ${d.capped_reason}\n`
+
+  return text
+}
+
+function formatTechnical(data: Record<string, unknown>): string {
+  const d = data as {
+    ticker?: string; error?: string
+    ma5?: number; ma10?: number; ma20?: number; ma60?: number
+    rsi_14?: number; macd?: number; macd_signal?: number; macd_hist?: number
+    support_levels?: number[]; resistance_levels?: number[]
+    volume_ratio?: number; trend?: string
+  }
+  if (d.error) return `❌ ${d.ticker}: ${d.error}`
+
+  const trendLabel = d.trend === 'up' ? '🟢 多头排列' : d.trend === 'down' ? '🔴 空头排列' : '🟡 震荡'
+  let text = `**📈 ${d.ticker} 技术分析**\n\n`
+  text += `**趋势**: ${trendLabel}\n`
+  text += `**均线**: MA5=${d.ma5} | MA10=${d.ma10} | MA20=${d.ma20} | MA60=${d.ma60}\n`
+  text += `**RSI(14)**: ${d.rsi_14}\n`
+  text += `**MACD**: DIF=${d.macd} | Signal=${d.macd_signal} | 柱=${d.macd_hist}\n`
+  text += `**量比**: ${d.volume_ratio}x\n`
+  if (d.support_levels?.length) {
+    text += `**支撑位**: ${d.support_levels.map(s => `$${s}`).join(', ')}\n`
+  }
+  if (d.resistance_levels?.length) {
+    text += `**压力位**: ${d.resistance_levels.map(r => `$${r}`).join(', ')}\n`
   }
   return text
 }

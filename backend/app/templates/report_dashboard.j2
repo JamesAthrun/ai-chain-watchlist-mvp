@@ -1,0 +1,52 @@
+{# AI 半导体产业链盯盘仪表盘报告模板 #}
+🎯 {{ report_date }} AI 半导体产业链盯盘
+━━━━━━━━━━━━━━━━━━━━
+📡 监控 {{ total_tickers }} 只 | {{ regime_label }}
+{% if signal_counts %}🟢强势:{{ signal_counts.buy }} 🟡持有:{{ signal_counts.hold }} 🔴避开:{{ signal_counts.avoid }}{% endif %}
+
+【📊 核心标的】
+💡 看法提示：⬇️支撑=跌到这里可能有买盘托住 | ⬆️压力=涨到这里可能有卖压 | RSI>70过热 | RSI<30超卖
+{% for item in top_movers %}
+{{ item.emoji }} **{{ item.ticker }}** ${{ item.price }} ({{ item.pct_change }}%)
+   {{ item.trend_label }} | RSI {{ item.rsi }}{% if item.support %} | ⬇️支撑${{ item.support }}{% endif %}{% if item.resistance %} | ⬆️压力${{ item.resistance }}{% endif %}
+{% endfor %}
+
+{% if risk_alerts %}
+【🚨 风险警报】
+{% for alert in risk_alerts %}
+• {{ alert }}
+{% endfor %}
+{% endif %}
+
+{% if catalysts %}
+【✨ 催化因素】
+{% for cat in catalysts %}
+• {{ cat }}
+{% endfor %}
+{% endif %}
+
+【📈 板块强弱】
+{% for bucket in bucket_scores %}
+{{ bucket.emoji }} {{ bucket.label }}: {{ bucket.avg_pct }}% {% if bucket.tags %}[{{ bucket.tags }}]{% endif %}
+{% endfor %}
+
+【🎯 操作建议】
+{% if add_candidates %}
+可关注加仓: {{ add_candidates | join(', ') }}
+{% endif %}
+{% if avoid_tickers %}
+暂时回避: {{ avoid_tickers | join(', ') }}
+{% endif %}
+结论: {{ action_suggestion }}
+新买入上限: ${{ new_buy_cap }}
+
+{% if sleep_orders %}
+【😴 睡觉挂单建议】
+{% for order in sleep_orders %}
+• {{ order.ticker }}({{ order.bucket_label }}): ${{ order.low }} - ${{ order.high }}, 最多 ${{ order.max_dollars }}
+{% endfor %}
+{% endif %}
+
+【⚠️ 风险提示】
+本报告由本地技术指标 + AI 分析生成，不构成投资建议。
+━━━━━━━━━━━━━━━━━━━━
