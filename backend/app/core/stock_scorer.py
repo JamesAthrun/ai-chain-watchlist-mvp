@@ -158,24 +158,24 @@ def score_stock(
     # 5. Concentration penalty (0-30)
     concentration_penalty = 0.0
     if portfolio:
-        # Single stock concentration
-        ticker_exposure = portfolio.single_ticker_exposure.get(ticker, 0.0)
-        max_single = {"core": 0.15, "semi_core": 0.10, "high_beta": 0.05,
-                      "cyclical": 0.10, "beta": 0.08, "leveraged": 0.02}
-        max_pct = max_single.get(category, 0.10)
-        if ticker_exposure > max_pct * 0.8:  # Already at 80% of max
+        # Single stock concentration (single_ticker_exposure values are percentages, e.g. 12.5 = 12.5%)
+        ticker_exposure_pct = portfolio.single_ticker_exposure.get(ticker, 0.0)
+        max_single_pct = {"core": 15, "semi_core": 10, "high_beta": 5,
+                          "cyclical": 10, "beta": 8, "leveraged": 2}
+        max_pct = max_single_pct.get(category, 10)
+        if ticker_exposure_pct > max_pct * 0.8:  # Already at 80% of max
             concentration_penalty += 20
-            reasons.append(f"仓位已重({ticker_exposure*100:.0f}%)")
-        elif ticker_exposure > max_pct * 0.5:
+            reasons.append(f"仓位已重({ticker_exposure_pct:.0f}%)")
+        elif ticker_exposure_pct > max_pct * 0.5:
             concentration_penalty += 10
 
         # Chain concentration
         if chain:
-            chain_exposure = sum(
+            chain_exposure_pct = sum(
                 portfolio.single_ticker_exposure.get(t, 0.0)
                 for t in CHAIN_MAP.get(chain, [])
             )
-            if chain_exposure > 0.35:
+            if chain_exposure_pct > 35:
                 concentration_penalty += 15
                 reasons.append(f"产业链过重")
 

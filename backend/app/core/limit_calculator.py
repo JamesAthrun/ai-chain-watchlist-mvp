@@ -216,20 +216,21 @@ def calculate_order_amount(
     position_mult = 1.0
     capped_reason = None
     if portfolio:
-        ticker_exp = portfolio.single_ticker_exposure.get(ticker, 0.0)
-        # Max single position by category
-        max_single = {"core": 0.15, "semi_core": 0.10, "high_beta": 0.05,
-                      "cyclical": 0.10, "beta": 0.08, "leveraged": 0.02}
-        max_pct = max_single.get(category, 0.10)
-        remaining_room = max(0, max_pct - ticker_exp)
-        max_add = remaining_room * account_value
+        # single_ticker_exposure values are percentages (e.g. 12.5 = 12.5%)
+        ticker_exp_pct = portfolio.single_ticker_exposure.get(ticker, 0.0)
+        # Max single position by category (in percentage points)
+        max_single_pct = {"core": 15, "semi_core": 10, "high_beta": 5,
+                          "cyclical": 10, "beta": 8, "leveraged": 2}
+        max_pct = max_single_pct.get(category, 10)
+        remaining_room_pct = max(0, max_pct - ticker_exp_pct)
+        max_add = remaining_room_pct / 100 * account_value
 
-        if remaining_room <= 0:
+        if remaining_room_pct <= 0:
             position_mult = 0.0
-            capped_reason = f"已满仓({ticker_exp*100:.0f}%)"
-        elif ticker_exp > max_pct * 0.5:
+            capped_reason = f"已满仓({ticker_exp_pct:.0f}%)"
+        elif ticker_exp_pct > max_pct * 0.5:
             position_mult = 0.5
-            capped_reason = f"接近上限({ticker_exp*100:.0f}%/{max_pct*100:.0f}%)"
+            capped_reason = f"接近上限({ticker_exp_pct:.0f}%/{max_pct:.0f}%)"
 
     raw_amount = base * market_mult * stock_mult * position_mult
 
