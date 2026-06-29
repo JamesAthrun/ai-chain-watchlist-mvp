@@ -14,6 +14,7 @@ load_dotenv()
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 from app.bot.commands import handle_summary
 from app.core.config_loader import get_all_tickers
@@ -82,6 +83,18 @@ def scheduled_report_job():
         print("=" * 40)
 
 
+def scheduled_global_market_job():
+    """Fetch and save global market snapshot."""
+    from app.core.global_market import save_snapshot
+    logger.info("Running scheduled global market snapshot job...")
+    try:
+        data = save_snapshot()
+        count = len([m for m in data.get("markets", []) if m.get("price") is not None])
+        logger.info(f"Global market snapshot saved: {count} tickers with data")
+    except Exception as e:
+        logger.error(f"Global market snapshot failed: {e}")
+
+
 def main():
     """Start the scheduler."""
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -95,7 +108,7 @@ def main():
 
     scheduler = BlockingScheduler()
 
-    # Run every 30 minutes
+    # Run market report every 30 minutes
     scheduler.add_job(
         scheduled_report_job,
         trigger=IntervalTrigger(minutes=30),
@@ -104,7 +117,25 @@ def main():
         replace_existing=True,
     )
 
-    print("Scheduler started. Report every 30 minutes.")
+    # Global market snapshot: 08:00 CST (00:00 UTC) - captures US/EU close
+    scheduler.add_job(
+        scheduled_global_market_job,
+        trigger=CronTrigger(hour=0, minute=0, timezone="UTC"),
+        id="global_market_morning",
+        name="Global Market Morning Snapshot",
+        replace_existing=True,
+    )
+
+    # Global market snapshot: 18:00 CST (10:00 UTC) - captures Asia close
+    scheduler.add_job(
+        scheduled_global_market_job,
+        trigger=CronTrigger(hour=10, minute=0, timezone="UTC"),
+        id="global_market_evening",
+        name="Global Market Evening Snapshot",
+        replace_existing=True,
+    )
+
+    print("Scheduler started. Report every 30 minutes. Global market at 08:00/18:00 CST.")
     print("Press Ctrl+C to stop.")
 
     # Run once immediately

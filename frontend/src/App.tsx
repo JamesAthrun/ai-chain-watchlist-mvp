@@ -4,7 +4,7 @@ import MessageList from './components/MessageList'
 import type { Message } from './components/MessageList'
 import QuickActions from './components/QuickActions'
 import ChatInput from './components/ChatInput'
-import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan, postAIExitAnalysis } from './api'
+import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan, postAIExitAnalysis, getGlobalMarket } from './api'
 import type { MarketSummary } from './api'
 
 export default function App() {
@@ -37,6 +37,20 @@ export default function App() {
                 ...prev,
                 { role: 'assistant', content: '📝 请描述你的交易，例如：\n• "买了100股NVDA 均价135"\n• "卖了50股AVGO 180块"\n• "我现在持有 NVDA 200股成本130，MRVL 100股成本80"' },
             ])
+            return
+        }
+        if (message === '__GLOBAL_MARKET__') {
+            setMessages((prev) => [...prev, { role: 'user', content: '🌍 全球市场' }])
+            setLoading(true)
+            try {
+                const data = await getGlobalMarket(true)
+                setMessages((prev) => [...prev, { role: 'assistant', content: formatGlobalMarket(data) }])
+                setConnected(true)
+            } catch (err) {
+                setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+            } finally {
+                setLoading(false)
+            }
             return
         }
         if (message === '__DASHBOARD__') {
@@ -332,6 +346,41 @@ function formatSleepPlan(data: Record<string, unknown>): string {
         text += `\n---\n**🤖 AI 建议**:\n${d.llm_analysis}`
     }
     return text
+}
+
+function formatGlobalMarket(data: Record<string, unknown>): string {
+    const d = data as {
+        timestamp?: string
+        markets?: { category: string; name: string; ticker: string; price: number | null; change_pct: number | null; currency: string; error?: string }[]
+        error?: string
+    }
+    if (d.error && (!d.markets || d.markets.length === 0)) {
+        return `⚠️ 全球市场数据获取失败: ${d.error}`
+    }
+
+    const lines: string[] = []
+    const ts = d.timestamp ? new Date(d.timestamp).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '未知'
+    lines.push(`🌍 **全球市场概览**`)
+    lines.push(`📅 ${ts}\n`)
+
+    let lastCategory = ''
+    for (const m of d.markets || []) {
+        if (m.category !== lastCategory) {
+            if (lastCategory) lines.push('')
+            lines.push(`**${m.category}**`)
+            lastCategory = m.category
+        }
+        if (m.price == null || m.change_pct == null) {
+            lines.push(`  ${m.name}: ⚠️ 暂无数据`)
+            continue
+        }
+        const emoji = m.change_pct >= 0 ? '🟢' : '🔴'
+        const sign = m.change_pct >= 0 ? '+' : ''
+        const priceStr = m.price >= 10000 ? m.price.toLocaleString() : m.price.toFixed(2)
+        lines.push(`  ${m.name}  ${priceStr}  ${emoji} ${sign}${m.change_pct.toFixed(2)}%`)
+    }
+
+    return lines.join('\n')
 }
 
 function formatDailyPlan(data: Record<string, unknown>): string {
