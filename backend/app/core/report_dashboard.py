@@ -194,6 +194,11 @@ def generate_dashboard_report(
     catalysts = list(dict.fromkeys(catalysts))[:5]
 
     # Render template
+    bucket_lines = "\n".join(
+        f"{b['emoji']} {b['label']}  {b['avg_pct']}%" + (f"  [{b['tags']}]" if b['tags'] else "")
+        for b in bucket_data
+    )
+
     template = _jinja_env.get_template("report_dashboard.j2")
     report = template.render(
         report_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -203,7 +208,7 @@ def generate_dashboard_report(
         top_movers=top_movers,
         risk_alerts=risk_alerts,
         catalysts=catalysts,
-        bucket_scores=bucket_data,
+        bucket_lines=bucket_lines,
         add_candidates=[ts.ticker for ts in summary.add_candidates[:5]],
         avoid_tickers=[ts.ticker for ts in summary.do_not_buy[:5]],
         action_suggestion=action_suggestion,
