@@ -4,7 +4,7 @@ import MessageList from './components/MessageList'
 import type { Message } from './components/MessageList'
 import QuickActions from './components/QuickActions'
 import ChatInput from './components/ChatInput'
-import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan } from './api'
+import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan, postAIExitAnalysis } from './api'
 import type { MarketSummary } from './api'
 
 export default function App() {
@@ -82,11 +82,20 @@ export default function App() {
             return
         }
         if (message === '__EXIT_PLAN__') {
-            setMessages((prev) => [...prev, { role: 'user', content: '📉 持仓管理' }])
+            setMessages((prev) => [...prev, { role: 'user', content: enhance ? '📉 持仓管理 (AI增强)' : '📉 持仓管理' }])
             setLoading(true)
             try {
                 const data = await getExitPlan()
-                setMessages((prev) => [...prev, { role: 'assistant', content: formatExitPlan(data) }])
+                let content = formatExitPlan(data)
+                if (enhance) {
+                    try {
+                        const aiData = await postAIExitAnalysis()
+                        content += '\n\n' + formatAIExitAnalysis(aiData)
+                    } catch (aiErr) {
+                        content += '\n\n> ⚠️ AI 增强分析暂不可用'
+                    }
+                }
+                setMessages((prev) => [...prev, { role: 'assistant', content }])
                 setConnected(true)
             } catch (err) {
                 setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
@@ -94,6 +103,11 @@ export default function App() {
                 setLoading(false)
             }
             return
+        }
+        if (message === '__PULLBACK_ADD__') {
+            // Pullback add plan is now merged into exit-plan
+            // Redirect to exit plan
+            return handleSend('__EXIT_PLAN__')
         }
 
         // Handle confirm/cancel for pending trade
@@ -372,9 +386,26 @@ function formatExitPlan(data: Record<string, unknown>): string {
         exitPlans?: {
             ticker: string; type: string; action: string; confidence: string
             currentPrice: number; averageCost: number; gainPct: number; shares: number
+            trendStatus?: string
             reasoning?: string[]; trimPlan?: { trigger: string; price: number }[]
             riskPlan?: { trigger: string; price: number }[]
         }[]
+        addOnPullback?: {
+            summary?: {
+                addSmallCount: number; addNormalCount: number; addDeepOnlyCount: number
+                watchOnlyCount: number; doNotAddCount: number; reduceInsteadCount: number
+                totalSuggestedAddAmount: number
+            }
+            plans?: {
+                symbol: string; type: string; action: string
+                currentPrice: number; averageCost: number
+                singlePositionExposurePct: number
+                trendStatus: string; pullbackStatus: string
+                addLimits?: { level: number; price: number; amount: number; reason: string }[]
+                invalidationTriggers?: { trigger: string; action: string }[]
+                reasoning?: string[]
+            }[]
+        }
         generated_at?: string
     }
 
@@ -389,14 +420,28 @@ function formatExitPlan(data: Record<string, unknown>): string {
 
     if (d.exitPlans?.length) {
         const actionIcon: Record<string, string> = {
-            EXIT: '🔴', REDUCE_2_3: '🟠', TRIM_1_2: '🟡', TRIM_1_3: '🟡', WATCH: '👀', HOLD: '🟢',
+            EXIT: '🔴', REDUCE_2_3: '🟠', REDUCE_1_2: '🟡', REDUCE_1_3: '🟡',
+            TRIM_RISK: '🟡', TRIM_PROFIT: '🟢', WATCH_PULLBACK: '👀', WATCH: '👀', HOLD: '🟢',
         }
         const typeLabel: Record<string, string> = { CORE: '核心', SEMI_CORE: '半核心', CYCLICAL: '周期', HIGH_BETA: '高弹性', LEVERAGED_ETF: '杠杆ETF' }
+        const actionLabel: Record<string, string> = {
+            HOLD: '持有', WATCH: '观察', WATCH_PULLBACK: '回调观察',
+            TRIM_PROFIT: '止盈减仓', TRIM_RISK: '风控减仓',
+            REDUCE_1_3: '减仓1/3', REDUCE_1_2: '减仓1/2', REDUCE_2_3: '减仓2/3', EXIT: '退出',
+        }
         for (const p of d.exitPlans) {
             const icon = actionIcon[p.action] || '⚪'
             const pnlSign = p.gainPct >= 0 ? '+' : ''
-            text += `${icon} **${p.ticker}** [${typeLabel[p.type] || p.type}] → **${p.action}** (${p.confidence})\n`
+            text += `${icon} **${p.ticker}** [${typeLabel[p.type] || p.type}] → **${actionLabel[p.action] || p.action}** (${p.confidence})\n`
             text += `  ${p.shares}股 成本$${p.averageCost.toFixed(2)} 现价$${p.currentPrice.toFixed(2)} ${pnlSign}${p.gainPct.toFixed(1)}%\n`
+            if (p.trendStatus) {
+                const trendLabel: Record<string, string> = {
+                    STRONG_UPTREND: '📈 强势上升', PULLBACK_IN_UPTREND: '🔄 上升趋势回调',
+                    SHORT_TERM_BREAK_ONLY: '⚡ 短期走弱', MEDIUM_TREND_BREAK: '⚠️ 中期破位',
+                    LONG_TREND_BREAK: '🔴 长期破位', RELATIVE_UNDERPERFORMER: '📉 持续弱势',
+                }
+                text += `  ${trendLabel[p.trendStatus] || p.trendStatus}\n`
+            }
             if (p.reasoning?.length) {
                 text += `  💡 ${p.reasoning.join('; ')}\n`
             }
@@ -416,7 +461,161 @@ function formatExitPlan(data: Record<string, unknown>): string {
         text += '当前无持仓\n'
     }
 
+    // Pullback add-on section
+    if (d.addOnPullback?.plans?.length) {
+        const pb = d.addOnPullback
+        const addable = (pb.plans || []).filter(p => ['ADD_SMALL', 'ADD_NORMAL', 'ADD_DEEP_ONLY'].includes(p.action))
+        const noAdd = (pb.plans || []).filter(p => ['DO_NOT_ADD', 'REDUCE_INSTEAD'].includes(p.action))
+
+        if (addable.length > 0 || noAdd.length > 0) {
+            text += `---\n### 🔄 回调加仓评估\n`
+            if (pb.summary && pb.summary.totalSuggestedAddAmount > 0) {
+                text += `建议加仓总额: $${pb.summary.totalSuggestedAddAmount.toFixed(0)}\n\n`
+            } else {
+                text += '\n'
+            }
+
+            const pbActionIcon: Record<string, string> = {
+                ADD_NORMAL: '🟢', ADD_SMALL: '🟡', ADD_DEEP_ONLY: '🔵',
+                WATCH_ONLY: '👀', DO_NOT_ADD: '🚫', REDUCE_INSTEAD: '🔴',
+            }
+            const pbActionLabel: Record<string, string> = {
+                ADD_NORMAL: '正常加仓', ADD_SMALL: '少量加仓', ADD_DEEP_ONLY: '深度回调才加',
+                WATCH_ONLY: '观察', DO_NOT_ADD: '不加仓', REDUCE_INSTEAD: '应减仓',
+            }
+            const pbPullbackLabel: Record<string, string> = {
+                BUYABLE_PULLBACK: '✅可买', NORMAL_PULLBACK: '➖正常回调',
+                WATCH_ONLY: '👀观察', BREAKDOWN_DO_NOT_ADD: '❌破位', REDUCE_INSTEAD: '🔴应减仓',
+            }
+
+            for (const p of addable) {
+                const icon = pbActionIcon[p.action] || '❓'
+                text += `${icon} **${p.symbol}** → ${pbActionLabel[p.action] || p.action} (${pbPullbackLabel[p.pullbackStatus] || p.pullbackStatus})\n`
+                if (p.addLimits?.length) {
+                    for (const lim of p.addLimits) {
+                        text += `  L${lim.level}: $${lim.price.toFixed(2)} ($${lim.amount.toFixed(0)})\n`
+                    }
+                }
+                if (p.invalidationTriggers?.length) {
+                    text += `  ⚠️ 失效: ${p.invalidationTriggers.map(t => t.trigger).join('; ')}\n`
+                }
+            }
+
+            if (noAdd.length > 0) {
+                const noAddList = noAdd.map(p => `${pbActionIcon[p.action] || '🚫'} ${p.symbol}(${pbActionLabel[p.action]})`).join(' | ')
+                text += `\n${noAddList}\n`
+            }
+        }
+    }
+
     if (d.generated_at) text += `---\n⏰ ${d.generated_at}\n`
+    return text
+}
+
+function formatAIExitAnalysis(data: Record<string, unknown>): string {
+    const d = data as {
+        overallPositionBias?: string
+        oneLineSummary?: string
+        userFacingSummary?: string
+        portfolioRead?: { exposureComment?: string; concentrationComment?: string; trendComment?: string; riskComment?: string }
+        actionBuckets?: {
+            hold?: { symbol: string; reason: string }[]
+            watch?: { symbol: string; reason: string }[]
+            trim?: { symbol: string; suggestedAction?: string; reason: string }[]
+            exit?: { symbol: string; reason: string }[]
+            avoidAdding?: { symbol: string; reason: string }[]
+        }
+        conflicts?: { symbol: string; conflictType: string; severity: string; explanation: string }[]
+        positionExplanations?: { symbol: string; action: string; plainEnglishReason: string; whatWouldChangeTheDecision: string; nextTriggerToWatch: string }[]
+        riskWarnings?: string[]
+        finalInstruction?: string
+        generated_at?: string
+    }
+
+    const biasLabel: Record<string, string> = {
+        HOLD_CORE: '🟢 持有核心', SELECTIVE_TRIM: '🟡 选择性减仓',
+        DEFENSIVE_REDUCE: '🟠 防御性减仓', RISK_CONTROL: '🔴 风控优先', EXIT_RISK: '⛔ 退出风险',
+    }
+
+    let text = `## 🤖 AI 持仓分析\n\n`
+    text += `**整体判断**: ${biasLabel[d.overallPositionBias || ''] || d.overallPositionBias || '未知'}\n\n`
+
+    if (d.oneLineSummary) text += `> ${d.oneLineSummary}\n\n`
+    if (d.userFacingSummary) text += `${d.userFacingSummary}\n\n`
+
+    if (d.portfolioRead) {
+        text += `### 组合评估\n`
+        if (d.portfolioRead.exposureComment) text += `- 💰 ${d.portfolioRead.exposureComment}\n`
+        if (d.portfolioRead.concentrationComment) text += `- 📊 ${d.portfolioRead.concentrationComment}\n`
+        if (d.portfolioRead.trendComment) text += `- 📈 ${d.portfolioRead.trendComment}\n`
+        if (d.portfolioRead.riskComment) text += `- ⚠️ ${d.portfolioRead.riskComment}\n`
+        text += '\n'
+    }
+
+    if (d.actionBuckets) {
+        const b = d.actionBuckets
+        if (b.trim?.length) {
+            text += `### 🟡 建议减仓\n`
+            for (const item of b.trim) {
+                text += `- **${item.symbol}** (${item.suggestedAction || 'TRIM'}): ${item.reason}\n`
+            }
+            text += '\n'
+        }
+        if (b.exit?.length) {
+            text += `### 🔴 建议退出\n`
+            for (const item of b.exit) {
+                text += `- **${item.symbol}**: ${item.reason}\n`
+            }
+            text += '\n'
+        }
+        if (b.watch?.length) {
+            text += `### 👀 需要关注\n`
+            for (const item of b.watch) {
+                text += `- **${item.symbol}**: ${item.reason}\n`
+            }
+            text += '\n'
+        }
+        if (b.avoidAdding?.length) {
+            text += `### 🚫 避免加仓\n`
+            for (const item of b.avoidAdding) {
+                text += `- **${item.symbol}**: ${item.reason}\n`
+            }
+            text += '\n'
+        }
+    }
+
+    if (d.conflicts?.length) {
+        text += `### ⚡ 信号冲突\n`
+        for (const c of d.conflicts) {
+            const sev = c.severity === 'HIGH' ? '🔴' : c.severity === 'MEDIUM' ? '🟡' : '⚪'
+            text += `- ${sev} **${c.symbol}**: ${c.explanation}\n`
+        }
+        text += '\n'
+    }
+
+    if (d.positionExplanations?.length) {
+        text += `### 📋 个股解读\n`
+        for (const pe of d.positionExplanations) {
+            text += `**${pe.symbol}** → ${pe.action}\n`
+            text += `  ${pe.plainEnglishReason}\n`
+            text += `  变化条件: ${pe.whatWouldChangeTheDecision}\n`
+            text += `  关注触发: ${pe.nextTriggerToWatch}\n\n`
+        }
+    }
+
+    if (d.riskWarnings?.length) {
+        text += `### ⚠️ 风险提醒\n`
+        for (const w of d.riskWarnings) {
+            text += `- ${w}\n`
+        }
+        text += '\n'
+    }
+
+    if (d.finalInstruction) {
+        text += `---\n**📌 操作指令**: ${d.finalInstruction}\n`
+    }
+
+    if (d.generated_at) text += `\n⏰ ${d.generated_at}\n`
     return text
 }
 

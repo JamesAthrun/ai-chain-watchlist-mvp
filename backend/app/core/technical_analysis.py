@@ -47,6 +47,18 @@ class TechnicalIndicators:
         self.swing_high: float = 0.0
         self.swing_low: float = 0.0
         self.ma50: float = 0.0
+        self.ma100: float = 0.0
+        self.ma200: float = 0.0
+        # MA slope (pct change over lookback period)
+        self.ma20_slope_pct: float = 0.0
+        self.ma50_slope_pct: float = 0.0
+        self.ma100_slope_pct: float = 0.0
+        # Multi-timeframe relative strength vs SMH
+        self.rs_5d_vs_smh: float = 0.0
+        self.rs_20d_vs_smh: float = 0.0
+        self.rs_60d_vs_smh: float = 0.0
+        # Recent swing low (20-day low for structural support)
+        self.recent_swing_low: float = 0.0
         self.volume_ratio: float = 1.0  # today vol / 5-day avg vol
         self.trend: str = "neutral"  # up / down / neutral
         self.days_below_ma20: int = 0  # consecutive closes below MA20
@@ -89,6 +101,15 @@ class TechnicalIndicators:
             "fib_618": round(self.fib_618, 2),
             "swing_high": round(self.swing_high, 2),
             "swing_low": round(self.swing_low, 2),
+            "ma100": round(self.ma100, 2),
+            "ma200": round(self.ma200, 2),
+            "ma20_slope_pct": round(self.ma20_slope_pct, 3),
+            "ma50_slope_pct": round(self.ma50_slope_pct, 3),
+            "ma100_slope_pct": round(self.ma100_slope_pct, 3),
+            "rs_5d_vs_smh": round(self.rs_5d_vs_smh, 2),
+            "rs_20d_vs_smh": round(self.rs_20d_vs_smh, 2),
+            "rs_60d_vs_smh": round(self.rs_60d_vs_smh, 2),
+            "recent_swing_low": round(self.recent_swing_low, 2),
             "volume_ratio": round(self.volume_ratio, 2),
             "trend": self.trend,
             "days_below_ma20": self.days_below_ma20,
@@ -222,7 +243,7 @@ def _determine_trend(ma5: float, ma10: float, ma20: float, current_price: float)
         return "neutral"
 
 
-def analyze_ticker_technical(ticker: str, period: str = "3mo") -> TechnicalIndicators:
+def analyze_ticker_technical(ticker: str, period: str = "1y") -> TechnicalIndicators:
     """Fetch historical data and calculate technical indicators for a single ticker.
 
     Uses yfinance for historical daily data (free, no API key needed for this).
@@ -247,6 +268,9 @@ def analyze_ticker_technical(ticker: str, period: str = "3mo") -> TechnicalIndic
         result.ma10 = float(closes.iloc[-10:].mean()) if len(closes) >= 10 else 0.0
         result.ma20 = float(closes.iloc[-20:].mean()) if len(closes) >= 20 else 0.0
         result.ma60 = float(closes.iloc[-60:].mean()) if len(closes) >= 60 else 0.0
+        result.ma50 = float(closes.iloc[-50:].mean()) if len(closes) >= 50 else 0.0
+        result.ma100 = float(closes.iloc[-100:].mean()) if len(closes) >= 100 else 0.0
+        result.ma200 = float(closes.iloc[-200:].mean()) if len(closes) >= 200 else 0.0
 
         # RSI
         result.rsi_14 = _calc_rsi(closes, 14)
@@ -325,7 +349,7 @@ def _fetch_bars_polygon(ticker: str, days: int = 90) -> Optional[pd.DataFrame]:
         return None
 
 
-def analyze_batch_technical(tickers: list[str], period: str = "3mo") -> dict[str, TechnicalIndicators]:
+def analyze_batch_technical(tickers: list[str], period: str = "1y") -> dict[str, TechnicalIndicators]:
     """Analyze multiple tickers. Uses Polygon proxy for historical bars, yfinance as fallback.
 
     Polygon proxy requests run concurrently (up to 8 threads) to avoid timeout.
@@ -336,30 +360,34 @@ def analyze_batch_technical(tickers: list[str], period: str = "3mo") -> dict[str
     if not valid_tickers:
         return results
 
-    days = {"1mo": 30, "3mo": 90, "6mo": 180}.get(period, 90)
+    days = {"1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}.get(period, 365)
     polygon_available = bool(os.getenv("POLYGON_PROXY_URL") and os.getenv("POLYGON_PROXY_KEY"))
     yf_fallback_tickers = []
+    # Store raw close series for relative strength calculation
+    _raw_closes: dict[str, pd.Series] = {}
 
-    def _fetch_and_compute(ticker: str) -> tuple[str, TechnicalIndicators, bool]:
-        """Fetch bars and compute indicators for one ticker. Returns (ticker, result, success)."""
+    def _fetch_and_compute(ticker: str) -> tuple[str, TechnicalIndicators, bool, Optional[pd.Series]]:
+        """Fetch bars and compute indicators for one ticker. Returns (ticker, result, success, closes)."""
         result = TechnicalIndicators(ticker=ticker)
         df = _fetch_bars_polygon(ticker, days) if polygon_available else None
         if df is not None and len(df) >= 5:
             try:
                 result = _compute_indicators(ticker, df)
-                return (ticker, result, True)
+                return (ticker, result, True, df["Close"] if "Close" in df.columns else None)
             except Exception as e:
                 logger.warning(f"[ta] {ticker} indicator calc failed: {e}")
                 result.error = str(e)
-                return (ticker, result, False)
-        return (ticker, result, False)
+                return (ticker, result, False, None)
+        return (ticker, result, False, None)
 
     # Run Polygon fetches concurrently
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(_fetch_and_compute, t): t for t in valid_tickers}
         for future in as_completed(futures):
-            ticker, result, success = future.result()
+            ticker, result, success, closes_series = future.result()
             results[ticker] = result
+            if success and closes_series is not None:
+                _raw_closes[ticker] = closes_series
             if not success:
                 yf_fallback_tickers.append(ticker)
 
@@ -379,11 +407,18 @@ def analyze_batch_technical(tickers: list[str], period: str = "3mo") -> dict[str
                         df = df.dropna(subset=["Close"]) if not df.empty and "Close" in df.columns else df
                         if not df.empty and len(df) >= 5:
                             results[ticker] = _compute_indicators(ticker, df)
+                            if "Close" in df.columns:
+                                _raw_closes[ticker] = df["Close"]
                     except Exception as e:
                         logger.warning(f"[ta] {ticker} yfinance fallback failed: {e}")
                         results[ticker].error = str(e)
         except Exception as e:
             logger.warning(f"[ta] yfinance batch download failed: {e}")
+
+    # Compute multi-timeframe relative strength vs SMH
+    smh_closes = _raw_closes.get("SMH")
+    if smh_closes is not None:
+        compute_relative_strength(results, smh_closes, _raw_closes)
 
     return results
 
@@ -418,6 +453,26 @@ def _compute_indicators(ticker: str, df: pd.DataFrame) -> TechnicalIndicators:
     result.ma20 = float(closes.iloc[-20:].mean()) if len(closes) >= 20 else 0.0
     result.ma50 = float(closes.iloc[-50:].mean()) if len(closes) >= 50 else 0.0
     result.ma60 = float(closes.iloc[-60:].mean()) if len(closes) >= 60 else 0.0
+    result.ma100 = float(closes.iloc[-100:].mean()) if len(closes) >= 100 else 0.0
+    result.ma200 = float(closes.iloc[-200:].mean()) if len(closes) >= 200 else 0.0
+
+    # MA slopes (pct change over lookback period)
+    if len(closes) >= 25 and result.ma20 > 0:
+        ma20_series = closes.rolling(20).mean()
+        ma20_5ago = float(ma20_series.iloc[-6]) if len(ma20_series) >= 6 and not pd.isna(ma20_series.iloc[-6]) else 0.0
+        result.ma20_slope_pct = ((result.ma20 - ma20_5ago) / ma20_5ago * 100) if ma20_5ago > 0 else 0.0
+    if len(closes) >= 60 and result.ma50 > 0:
+        ma50_series = closes.rolling(50).mean()
+        ma50_10ago = float(ma50_series.iloc[-11]) if len(ma50_series) >= 11 and not pd.isna(ma50_series.iloc[-11]) else 0.0
+        result.ma50_slope_pct = ((result.ma50 - ma50_10ago) / ma50_10ago * 100) if ma50_10ago > 0 else 0.0
+    if len(closes) >= 120 and result.ma100 > 0:
+        ma100_series = closes.rolling(100).mean()
+        ma100_20ago = float(ma100_series.iloc[-21]) if len(ma100_series) >= 21 and not pd.isna(ma100_series.iloc[-21]) else 0.0
+        result.ma100_slope_pct = ((result.ma100 - ma100_20ago) / ma100_20ago * 100) if ma100_20ago > 0 else 0.0
+
+    # Recent swing low (20-day low for structural support confirmation)
+    if len(df) >= 20:
+        result.recent_swing_low = float(df["Low"].iloc[-20:].min())
 
     # RSI
     result.rsi_14 = _calc_rsi(closes, 14)
@@ -455,6 +510,46 @@ def _compute_indicators(ticker: str, df: pd.DataFrame) -> TechnicalIndicators:
         ma50_series = closes.rolling(50).mean()
         result.days_below_ma50 = _count_consecutive_below(closes, ma50_series)
 
+    # Multi-timeframe relative strength vs SMH (computed externally via compute_relative_strength)
+
     result.data_available = True
 
     return result
+
+
+def compute_relative_strength(
+    ta_results: dict[str, "TechnicalIndicators"],
+    smh_closes: Optional[pd.Series] = None,
+    ticker_closes_map: Optional[dict[str, pd.Series]] = None,
+) -> None:
+    """Compute multi-timeframe relative strength vs SMH and set rs_*d_vs_smh fields.
+
+    Called after batch TA to enrich results with 5d/20d/60d relative strength.
+    Requires raw close series for SMH and individual tickers.
+    """
+    if smh_closes is None or ticker_closes_map is None:
+        return
+
+    smh_len = len(smh_closes)
+    if smh_len < 5:
+        return
+
+    def _pct_return(series: pd.Series, days: int) -> float:
+        if len(series) < days + 1:
+            return 0.0
+        return (float(series.iloc[-1]) - float(series.iloc[-1 - days])) / float(series.iloc[-1 - days]) * 100
+
+    smh_5d = _pct_return(smh_closes, 5)
+    smh_20d = _pct_return(smh_closes, 20) if smh_len >= 21 else 0.0
+    smh_60d = _pct_return(smh_closes, 60) if smh_len >= 61 else 0.0
+
+    for ticker, ta in ta_results.items():
+        if ticker == "SMH" or not ta.data_available:
+            continue
+        closes = ticker_closes_map.get(ticker)
+        if closes is None or len(closes) < 5:
+            continue
+
+        ta.rs_5d_vs_smh = round(_pct_return(closes, 5) - smh_5d, 2)
+        ta.rs_20d_vs_smh = round(_pct_return(closes, 20) - smh_20d, 2) if len(closes) >= 21 else 0.0
+        ta.rs_60d_vs_smh = round(_pct_return(closes, 60) - smh_60d, 2) if len(closes) >= 61 else 0.0

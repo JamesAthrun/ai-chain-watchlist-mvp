@@ -139,6 +139,11 @@ async def daily_plan():
         watchlist=watchlist,
     )
 
+    # Exclude already-held tickers from daily plan candidates
+    # (pullback-add in /api/exit-plan handles existing positions)
+    held_tickers = {p.ticker for p in portfolio.positions if p.shares > 0}
+    scored_new = [s for s in scored if s["ticker"] not in held_tickers]
+
     # Map market regime from summary to limit calculator regime
     regime_map = {
         "market_strong": "strong",
@@ -148,9 +153,9 @@ async def daily_plan():
     }
     market_regime = regime_map.get(summary.market_regime, "neutral")
 
-    # Generate limit orders
+    # Generate limit orders (only for non-held tickers)
     orders = generate_daily_limits(
-        scored_stocks=scored,
+        scored_stocks=scored_new,
         ta_results=ta_results,
         snapshots=snapshots,
         market_regime=market_regime,
@@ -167,7 +172,7 @@ async def daily_plan():
             "semi_strong_qqq_weak": "半导体强/QQQ弱",
         }.get(summary.market_regime, "未知"),
         "sector_pct_change": round(sector_pct, 2),
-        "scored_stocks": scored[:10],  # top 10 by score
+        "scored_stocks": scored_new[:10],  # top 10 non-held by score
         "limit_orders": orders,
         "total_order_amount": sum(o["amount_l1"] for o in orders),
         "max_daily_amount": account_value * 0.30,
@@ -197,6 +202,7 @@ async def exit_plan():
     """
     from app.core.technical_analysis import analyze_batch_technical
     from app.core.exit_engine import generate_exit_plan
+    from app.core.pullback_engine import generate_pullback_add_plan
 
     snapshots, summary = _get_or_refresh()
     watchlist = load_watchlist()
@@ -224,7 +230,45 @@ async def exit_plan():
         watchlist=watchlist,
         market_regime=market_regime,
     )
+
+    # Merge pullback add plan into exit-plan response
+    pullback_data = generate_pullback_add_plan(
+        portfolio=portfolio,
+        snapshots=snapshots,
+        ta_results=ta_results,
+        watchlist=watchlist,
+    )
+    result["addOnPullback"] = pullback_data
+
     result["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return result
+
+
+@router.get("/pullback-add-plan")
+async def pullback_add_plan():
+    """Generate pullback add plan for all current positions.
+
+    Evaluates whether existing holdings on pullback should be added to.
+    Distinguishes buyable pullbacks from breakdowns.
+    """
+    from app.core.technical_analysis import analyze_batch_technical
+    from app.core.pullback_engine import generate_pullback_add_plan
+
+    snapshots, summary = _get_or_refresh()
+    watchlist = load_watchlist()
+    portfolio_data = get_portfolio_data()
+    portfolio = analyze_portfolio(portfolio_data, snapshots)
+
+    held_tickers = [p.ticker for p in portfolio.positions if p.shares > 0]
+    ta_tickers = list(set(held_tickers + ["SMH"]))
+    ta_results = analyze_batch_technical(ta_tickers)
+
+    result = generate_pullback_add_plan(
+        portfolio=portfolio,
+        snapshots=snapshots,
+        ta_results=ta_results,
+        watchlist=watchlist,
+    )
     return result
 
 
@@ -340,3 +384,73 @@ async def ticker_score(ticker: str):
         "capped_reason": amounts["capped_reason"],
         "ta": ta.to_dict() if ta.data_available else None,
     }
+
+
+@router.post("/ai-exit-analysis")
+async def ai_exit_analysis():
+    """AI-enhanced exit analysis — DeepSeek explanation layer over /api/exit-plan.
+
+    Consumes the deterministic exit-plan, runs pre-checks (exposure, conflicts,
+    concentration), then calls DeepSeek to produce plain-English explanations
+    and risk audit. Falls back to deterministic output if DeepSeek fails.
+    """
+    from app.core.technical_analysis import analyze_batch_technical
+    from app.core.exit_engine import generate_exit_plan
+    from app.core.ai_exit_analysis import generate_ai_exit_analysis
+    from app.core.pullback_engine import generate_pullback_add_plan
+
+    snapshots, summary = _get_or_refresh()
+    watchlist = load_watchlist()
+    portfolio_data = get_portfolio_data()
+    portfolio = analyze_portfolio(portfolio_data, snapshots)
+
+    # Run exit plan (same logic as GET /api/exit-plan)
+    held_tickers = [p.ticker for p in portfolio.positions if p.shares > 0]
+    ta_tickers = list(set(held_tickers + ["SMH"]))
+    ta_results = analyze_batch_technical(ta_tickers)
+
+    regime_map = {
+        "market_strong": "STRONG",
+        "market_neutral": "NEUTRAL",
+        "market_weak": "WEAK",
+        "semi_strong_qqq_weak": "NEUTRAL",
+    }
+    market_regime = regime_map.get(summary.market_regime, "NEUTRAL")
+
+    exit_plan_data = generate_exit_plan(
+        portfolio=portfolio,
+        snapshots=snapshots,
+        ta_results=ta_results,
+        watchlist=watchlist,
+        market_regime=market_regime,
+    )
+
+    # Build portfolio summary dict for AI analysis
+    portfolio_dict = {
+        "account_value": portfolio.account_value,
+        "cash": portfolio.cash,
+        "invested_value": portfolio.invested_value,
+        "position_pct": portfolio.position_pct,
+        "bucket_exposure": portfolio.bucket_exposure,
+        "single_ticker_exposure": portfolio.single_ticker_exposure,
+    }
+
+    # Generate pullback add plan
+    pullback_data = generate_pullback_add_plan(
+        portfolio=portfolio,
+        snapshots=snapshots,
+        ta_results=ta_results,
+        watchlist=watchlist,
+    )
+
+    # Generate AI-enhanced analysis
+    result = generate_ai_exit_analysis(
+        portfolio_summary=portfolio_dict,
+        exit_plan=exit_plan_data,
+        daily_plan=None,  # Could optionally fetch daily-plan here
+        global_brief=None,  # Could optionally fetch global-brief here
+        pullback_add_plan=pullback_data,
+    )
+
+    result["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return result
