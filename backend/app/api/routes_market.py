@@ -21,6 +21,7 @@ from app.core.scoring import build_market_summary
 from app.core.report_dashboard import generate_dashboard_report
 from app.core.stock_scorer import score_all_stocks
 from app.core.limit_calculator import generate_daily_limits
+from app.core.global_market import get_global_market
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,17 @@ async def health():
         "service": "ai-chain-watchlist-mvp",
         "last_refresh": _cache.get("last_refresh"),
     }
+
+
+@router.get("/global-market")
+async def global_market(refresh: bool = Query(False)):
+    """Global market overview: indices, commodities, crypto."""
+    try:
+        data = get_global_market(refresh=refresh)
+        return data
+    except Exception as e:
+        logger.error(f"[global-market] Error: {e}")
+        return {"timestamp": None, "markets": [], "error": str(e)}
 
 
 @router.get("/market/summary")

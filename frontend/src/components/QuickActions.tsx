@@ -4,7 +4,8 @@ interface QuickActionsProps {
 }
 
 const actions = [
-    { label: '🎯 每日计划', message: '__DAILY_PLAN__' },
+    { label: '� 全球市场', message: '__GLOBAL_MARKET__' },
+    { label: '�🎯 每日计划', message: '__DAILY_PLAN__' },
     { label: '📉 持仓管理', message: '__EXIT_PLAN__' },
     { label: ' 仪表盘', message: '__DASHBOARD__' },
     { label: '🛌 挂单', message: '睡前挂单计划' },

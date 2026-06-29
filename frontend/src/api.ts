@@ -129,3 +129,9 @@ export async function getPullbackAddPlan(): Promise<Record<string, unknown>> {
     if (!resp.ok) throw new Error(`API error: ${resp.status}`)
     return resp.json()
 }
+
+export async function getGlobalMarket(refresh = false): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/global-market?refresh=${refresh}`)
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
