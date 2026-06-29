@@ -1,13 +1,16 @@
 """Technical analysis module - local calculation of indicators.
 
 Calculates MA, RSI, MACD, support/resistance levels using pandas.
-Inspired by daily_stock_analysis's StockTrendAnalyzer approach.
+Data source priority: Polygon proxy (historical bars) → yfinance fallback.
 """
 
 import logging
+import os
+from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
+import requests
 import yfinance as yf
 
 from app.core.models import TickerSnapshot
@@ -271,12 +274,149 @@ def analyze_ticker_technical(ticker: str, period: str = "3mo") -> TechnicalIndic
     return result
 
 
+def _fetch_bars_polygon(ticker: str, days: int = 90) -> Optional[pd.DataFrame]:
+    """Fetch historical daily bars from Polygon proxy.
+
+    Returns DataFrame with columns: Open, High, Low, Close, Volume
+    or None on failure.
+    """
+    proxy_url = os.getenv("POLYGON_PROXY_URL", "").rstrip("/")
+    proxy_key = os.getenv("POLYGON_PROXY_KEY", "")
+
+    if not proxy_url or not proxy_key:
+        return None
+
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    from_str = start_date.strftime("%Y-%m-%d")
+    to_str = end_date.strftime("%Y-%m-%d")
+
+    url = f"{proxy_url}/v2/aggs/ticker/{ticker}/range/1/day/{from_str}/{to_str}"
+    headers = {"X-Proxy-Key": proxy_key}
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            return None
+
+        df = pd.DataFrame(results)
+        # Polygon fields: o=open, h=high, l=low, c=close, v=volume, t=timestamp
+        df = df.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume", "t": "Timestamp"})
+        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+        return df
+
+    except Exception as e:
+        logger.debug(f"[ta] Polygon proxy bars failed for {ticker}: {e}")
+        return None
+
+
 def analyze_batch_technical(tickers: list[str], period: str = "3mo") -> dict[str, TechnicalIndicators]:
-    """Analyze multiple tickers. Returns dict of ticker -> TechnicalIndicators."""
+    """Analyze multiple tickers. Uses Polygon proxy for historical bars, yfinance as fallback.
+
+    Polygon proxy doesn't rate-limit like yfinance does from cloud servers.
+    """
+    valid_tickers = [t for t in tickers if not t.startswith("^")]
     results = {}
-    for ticker in tickers:
-        # Skip index tickers (^SOX etc.) - no historical data via yfinance for indices
-        if ticker.startswith("^"):
-            continue
-        results[ticker] = analyze_ticker_technical(ticker, period)
+
+    if not valid_tickers:
+        return results
+
+    days = {"1mo": 30, "3mo": 90, "6mo": 180}.get(period, 90)
+    polygon_available = bool(os.getenv("POLYGON_PROXY_URL") and os.getenv("POLYGON_PROXY_KEY"))
+    yf_fallback_tickers = []
+
+    for ticker in valid_tickers:
+        result = TechnicalIndicators(ticker=ticker)
+        df = None
+
+        # Try Polygon proxy first
+        if polygon_available:
+            df = _fetch_bars_polygon(ticker, days)
+
+        if df is not None and len(df) >= 5:
+            try:
+                result = _compute_indicators(ticker, df)
+            except Exception as e:
+                logger.warning(f"[ta] {ticker} indicator calc failed: {e}")
+                result.error = str(e)
+            results[ticker] = result
+        else:
+            # Collect for yfinance batch fallback
+            yf_fallback_tickers.append(ticker)
+            results[ticker] = result
+
+    # Batch fallback via yfinance for tickers where Polygon failed
+    if yf_fallback_tickers:
+        logger.info(f"[ta] Falling back to yfinance for {len(yf_fallback_tickers)} tickers")
+        try:
+            df_all = yf.download(yf_fallback_tickers, period=period, interval="1d",
+                                 group_by="ticker", progress=False, threads=True)
+            if df_all is not None and not df_all.empty:
+                for ticker in yf_fallback_tickers:
+                    try:
+                        if len(yf_fallback_tickers) == 1:
+                            df = df_all.copy()
+                        else:
+                            df = df_all[ticker].copy() if ticker in df_all.columns.get_level_values(0) else pd.DataFrame()
+                        df = df.dropna(subset=["Close"]) if not df.empty and "Close" in df.columns else df
+                        if not df.empty and len(df) >= 5:
+                            results[ticker] = _compute_indicators(ticker, df)
+                    except Exception as e:
+                        logger.warning(f"[ta] {ticker} yfinance fallback failed: {e}")
+                        results[ticker].error = str(e)
+        except Exception as e:
+            logger.warning(f"[ta] yfinance batch download failed: {e}")
+
     return results
+
+
+def _compute_indicators(ticker: str, df: pd.DataFrame) -> TechnicalIndicators:
+    """Compute all technical indicators from a DataFrame with OHLCV columns."""
+    result = TechnicalIndicators(ticker=ticker)
+
+    closes = df["Close"]
+    current_price = float(closes.iloc[-1])
+    result.current_price = current_price
+    result.prev_close = float(closes.iloc[-2]) if len(closes) >= 2 else current_price
+
+    # Moving averages
+    result.ma5 = float(closes.iloc[-5:].mean()) if len(closes) >= 5 else 0.0
+    result.ma10 = float(closes.iloc[-10:].mean()) if len(closes) >= 10 else 0.0
+    result.ma20 = float(closes.iloc[-20:].mean()) if len(closes) >= 20 else 0.0
+    result.ma60 = float(closes.iloc[-60:].mean()) if len(closes) >= 60 else 0.0
+
+    # RSI
+    result.rsi_14 = _calc_rsi(closes, 14)
+
+    # MACD
+    result.macd, result.macd_signal, result.macd_hist = _calc_macd(closes)
+
+    # Support / Resistance
+    result.support_levels, result.resistance_levels = _calc_support_resistance(
+        df, current_price, result.ma5, result.ma10, result.ma20
+    )
+
+    # ATR (14-day)
+    result.atr_14 = _calc_atr(df, 14)
+
+    # Fibonacci retracement (60-day swing)
+    result.fib_382, result.fib_500, result.fib_618, result.swing_high, result.swing_low = (
+        _calc_fibonacci(df, 60)
+    )
+
+    # Volume ratio
+    if len(df) >= 5 and "Volume" in df.columns:
+        vol_5avg = float(df["Volume"].iloc[-5:].mean())
+        today_vol = float(df["Volume"].iloc[-1])
+        result.volume_ratio = today_vol / vol_5avg if vol_5avg > 0 else 1.0
+
+    # Trend
+    result.trend = _determine_trend(result.ma5, result.ma10, result.ma20, current_price)
+    result.data_available = True
+
+    return result
