@@ -15,15 +15,13 @@ from app.core.models import TickerSnapshot
 
 logger = logging.getLogger(__name__)
 
-# Provider config loaded once at import time
-_POLYGON_PROXY_URL = os.getenv("POLYGON_PROXY_URL", "").rstrip("/")
-_POLYGON_PROXY_KEY = os.getenv("POLYGON_PROXY_KEY", "")
-_POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "")
-_PROVIDERS = [
-    p.strip()
-    for p in os.getenv("MARKET_DATA_PROVIDERS", "polygon_proxy,yfinance").split(",")
-    if p.strip()
-]
+
+def _get_providers() -> list[str]:
+    return [
+        p.strip()
+        for p in os.getenv("MARKET_DATA_PROVIDERS", "polygon_proxy,yfinance").split(",")
+        if p.strip()
+    ]
 
 
 def _ticker_to_polygon(ticker: str) -> str:
@@ -70,36 +68,47 @@ def _build_snapshot(
 
 
 def _parse_polygon_snapshot(data: dict, ticker: str) -> TickerSnapshot:
-    """Parse Polygon snapshot API response into TickerSnapshot."""
-    # Response structure: {"ticker": {...}, "status": "OK"}
-    # or {"ticker": {"day": {...}, "prevDay": {...}, "lastTrade": {...}, ...}}
+    """Parse Polygon snapshot API response into TickerSnapshot.
+
+    Response may contain: day, prevDay, lastTrade, min, todaysChange fields.
+    On weekends/off-hours, day fields may be zero; fall back to min or prevDay.
+    """
     t = data.get("ticker", data)
 
     day = t.get("day", {})
     prev_day = t.get("prevDay", {})
     last_trade = t.get("lastTrade", {})
+    minute = t.get("min", {})
 
-    last_price = last_trade.get("p", 0.0) or day.get("c", 0.0)
-    open_price = day.get("o", 0.0)
-    day_high = day.get("h", 0.0)
-    day_low = day.get("l", 0.0)
-    volume = day.get("v", 0.0)
+    # Determine last_price: lastTrade > min > day > prevDay
+    last_price = last_trade.get("p", 0.0)
+    if not last_price:
+        last_price = minute.get("c", 0.0)
+    if not last_price:
+        last_price = day.get("c", 0.0)
+    if not last_price:
+        last_price = prev_day.get("c", 0.0)
+
+    # Day OHLV – fall back to prevDay if day is empty (weekends)
+    open_price = day.get("o", 0.0) or prev_day.get("o", 0.0)
+    day_high = day.get("h", 0.0) or prev_day.get("h", 0.0)
+    day_low = day.get("l", 0.0) or prev_day.get("l", 0.0)
+    volume = day.get("v", 0.0) or prev_day.get("v", 0.0)
     prev_close = prev_day.get("c", 0.0)
-
-    if last_price == 0.0 and day.get("c", 0.0) > 0:
-        last_price = day["c"]
 
     return _build_snapshot(ticker, last_price, prev_close, open_price, day_high, day_low, volume)
 
 
 def _fetch_single_polygon_proxy(ticker: str) -> Optional[TickerSnapshot]:
     """Fetch from Polygon proxy service."""
-    if not _POLYGON_PROXY_URL or not _POLYGON_PROXY_KEY:
+    proxy_url = os.getenv("POLYGON_PROXY_URL", "").rstrip("/")
+    proxy_key = os.getenv("POLYGON_PROXY_KEY", "")
+    if not proxy_url or not proxy_key:
         return None
 
     poly_ticker = _ticker_to_polygon(ticker)
-    url = f"{_POLYGON_PROXY_URL}/v2/snapshot/locale/us/markets/stocks/tickers/{poly_ticker}"
-    headers = {"X-Proxy-Key": _POLYGON_PROXY_KEY}
+    url = f"{proxy_url}/v2/snapshot/locale/us/markets/stocks/tickers/{poly_ticker}"
+    headers = {"X-Proxy-Key": proxy_key}
 
     resp = requests.get(url, headers=headers, timeout=15)
     if resp.status_code != 200:
@@ -114,12 +123,13 @@ def _fetch_single_polygon_proxy(ticker: str) -> Optional[TickerSnapshot]:
 
 def _fetch_single_polygon_native(ticker: str) -> Optional[TickerSnapshot]:
     """Fetch from Polygon/Massive native API."""
-    if not _POLYGON_API_KEY:
+    api_key = os.getenv("POLYGON_API_KEY", "")
+    if not api_key:
         return None
 
     poly_ticker = _ticker_to_polygon(ticker)
     url = f"https://api.massive.com/v2/snapshot/locale/us/markets/stocks/tickers/{poly_ticker}"
-    params = {"apiKey": _POLYGON_API_KEY}
+    params = {"apiKey": api_key}
 
     resp = requests.get(url, params=params, timeout=15)
     if resp.status_code != 200:
@@ -189,7 +199,7 @@ _PROVIDER_MAP = {
 def fetch_snapshots(tickers: list[str]) -> dict[str, TickerSnapshot]:
     """Fetch market data with multi-provider fallback."""
     results: dict[str, TickerSnapshot] = {}
-    providers = [p for p in _PROVIDERS if p in _PROVIDER_MAP]
+    providers = [p for p in _get_providers() if p in _PROVIDER_MAP]
     logger.info(f"[market_data] Starting fetch for {len(tickers)} tickers, providers: {providers}")
 
     provider_stats: dict[str, int] = {}
