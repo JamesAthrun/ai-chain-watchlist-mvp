@@ -4,7 +4,7 @@ import MessageList from './components/MessageList'
 import type { Message } from './components/MessageList'
 import QuickActions from './components/QuickActions'
 import ChatInput from './components/ChatInput'
-import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore } from './api'
+import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan } from './api'
 import type { MarketSummary } from './api'
 
 export default function App() {
@@ -73,6 +73,20 @@ export default function App() {
             try {
                 const data = await getDailyPlan()
                 setMessages((prev) => [...prev, { role: 'assistant', content: formatDailyPlan(data) }])
+                setConnected(true)
+            } catch (err) {
+                setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+            } finally {
+                setLoading(false)
+            }
+            return
+        }
+        if (message === '__EXIT_PLAN__') {
+            setMessages((prev) => [...prev, { role: 'user', content: '📉 持仓管理' }])
+            setLoading(true)
+            try {
+                const data = await getExitPlan()
+                setMessages((prev) => [...prev, { role: 'assistant', content: formatExitPlan(data) }])
                 setConnected(true)
             } catch (err) {
                 setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
@@ -213,6 +227,10 @@ export default function App() {
             const data = await getDashboard(enhance)
             return data.report
         }
+        if (message.includes('持仓管理') || message.includes('退出') || message.includes('止盈') || message.includes('止损') || message.includes('exit plan')) {
+            const data = await getExitPlan()
+            return formatExitPlan(data)
+        }
         // Handle "评分 MU" or "MU评分" or "score NVDA" style queries
         const scoreMatch = message.match(/(?:评分|score|打分|挂单价)\s*([A-Z]{1,5})/i) || message.match(/([A-Z]{2,5})\s*(?:评分|打分|score|几分|多少分)/i)
         if (scoreMatch) {
@@ -343,6 +361,62 @@ function formatDailyPlan(data: Record<string, unknown>): string {
         }
     }
 
+    return text
+}
+
+function formatExitPlan(data: Record<string, unknown>): string {
+    const d = data as {
+        marketRegime?: string
+        portfolioRisk?: { riskLevel?: string; equityExposurePct?: number } | string
+        summary?: { holdCount: number; watchCount: number; trimCount: number; exitCount: number }
+        exitPlans?: {
+            ticker: string; type: string; action: string; confidence: string
+            currentPrice: number; averageCost: number; gainPct: number; shares: number
+            reasoning?: string[]; trimPlan?: { trigger: string; price: number }[]
+            riskPlan?: { trigger: string; price: number }[]
+        }[]
+        generated_at?: string
+    }
+
+    let text = `## 📉 持仓管理\n\n`
+    const riskLabel = typeof d.portfolioRisk === 'object' ? d.portfolioRisk?.riskLevel : d.portfolioRisk
+    text += `**市场**: ${d.marketRegime || '未知'} | **组合风险**: ${riskLabel || '未知'}\n`
+
+    if (d.summary) {
+        const s = d.summary
+        text += `持有 ${s.holdCount} | 观察 ${s.watchCount} | 减仓 ${s.trimCount} | 退出 ${s.exitCount}\n\n`
+    }
+
+    if (d.exitPlans?.length) {
+        const actionIcon: Record<string, string> = {
+            EXIT: '🔴', REDUCE_2_3: '🟠', TRIM_1_2: '🟡', TRIM_1_3: '🟡', WATCH: '👀', HOLD: '🟢',
+        }
+        const typeLabel: Record<string, string> = { CORE: '核心', SEMI_CORE: '半核心', CYCLICAL: '周期', HIGH_BETA: '高弹性', LEVERAGED_ETF: '杠杆ETF' }
+        for (const p of d.exitPlans) {
+            const icon = actionIcon[p.action] || '⚪'
+            const pnlSign = p.gainPct >= 0 ? '+' : ''
+            text += `${icon} **${p.ticker}** [${typeLabel[p.type] || p.type}] → **${p.action}** (${p.confidence})\n`
+            text += `  ${p.shares}股 成本$${p.averageCost.toFixed(2)} 现价$${p.currentPrice.toFixed(2)} ${pnlSign}${p.gainPct.toFixed(1)}%\n`
+            if (p.reasoning?.length) {
+                text += `  💡 ${p.reasoning.join('; ')}\n`
+            }
+            if (p.trimPlan?.length) {
+                for (const tp of p.trimPlan) {
+                    text += `  📈 ${tp.trigger}: $${tp.price.toFixed(2)}\n`
+                }
+            }
+            if (p.riskPlan?.length) {
+                for (const rp of p.riskPlan) {
+                    text += `  🛑 ${rp.trigger}: $${rp.price.toFixed(2)}\n`
+                }
+            }
+            text += '\n'
+        }
+    } else {
+        text += '当前无持仓\n'
+    }
+
+    if (d.generated_at) text += `---\n⏰ ${d.generated_at}\n`
     return text
 }
 

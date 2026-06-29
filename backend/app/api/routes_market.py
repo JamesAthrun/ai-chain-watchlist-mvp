@@ -185,6 +185,49 @@ async def refresh():
         return {"status": "error", "message": str(e)}
 
 
+@router.get("/exit-plan")
+async def exit_plan():
+    """Generate exit/trim/hold plan for all current positions.
+
+    Complements /api/daily-plan (buy decisions) with sell/risk management:
+    1. Classify each position (CORE/SEMI_CORE/CYCLICAL/HIGH_BETA/LEVERAGED_ETF)
+    2. Evaluate stop-loss, MA breakdown, trailing profit, resistance, RSI
+    3. Output action (HOLD/WATCH/TRIM_1_3/TRIM_1_2/REDUCE_2_3/EXIT)
+    4. Portfolio-level risk assessment
+    """
+    from app.core.technical_analysis import analyze_batch_technical
+    from app.core.exit_engine import generate_exit_plan
+
+    snapshots, summary = _get_or_refresh()
+    watchlist = load_watchlist()
+    portfolio_data = get_portfolio_data()
+    portfolio = analyze_portfolio(portfolio_data, snapshots)
+
+    # Run TA on all held tickers
+    held_tickers = [p.ticker for p in portfolio.positions if p.shares > 0]
+    # Also include SMH for relative strength
+    ta_tickers = list(set(held_tickers + ["SMH"]))
+    ta_results = analyze_batch_technical(ta_tickers)
+
+    regime_map = {
+        "market_strong": "STRONG",
+        "market_neutral": "NEUTRAL",
+        "market_weak": "WEAK",
+        "semi_strong_qqq_weak": "NEUTRAL",
+    }
+    market_regime = regime_map.get(summary.market_regime, "NEUTRAL")
+
+    result = generate_exit_plan(
+        portfolio=portfolio,
+        snapshots=snapshots,
+        ta_results=ta_results,
+        watchlist=watchlist,
+        market_regime=market_regime,
+    )
+    result["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return result
+
+
 @router.get("/market/dashboard")
 async def market_dashboard(enhance: bool = Query(False)):
     """Generate dashboard report with local technical analysis + optional LLM.
