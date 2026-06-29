@@ -26,30 +26,26 @@ TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 # Ticker definitions grouped by category
 # Twelve Data symbol format: indices use short names, metals use forex-style
 GLOBAL_TICKERS = [
-    # US Indices
-    {"symbol": "SPX", "name": "S&P 500", "category": "🇺🇸 美股", "currency": "USD"},
-    {"symbol": "IXIC", "name": "纳斯达克", "category": "🇺🇸 美股", "currency": "USD"},
-    {"symbol": "DJI", "name": "道琼斯", "category": "🇺🇸 美股", "currency": "USD"},
-    # Europe
-    {"symbol": "DAX", "name": "德国DAX", "category": "🇪🇺 欧洲", "currency": "EUR"},
-    {"symbol": "FTSE", "name": "英国FTSE", "category": "🇪🇺 欧洲", "currency": "GBP"},
-    # Asia-Pacific
-    {"symbol": "HSI", "name": "恒生指数", "category": "🌏 亚太", "currency": "HKD"},
-    {"symbol": "N225", "name": "日经225", "category": "🌏 亚太", "currency": "JPY"},
-    {"symbol": "SSEC", "name": "上证综指", "category": "🌏 亚太", "currency": "CNY"},
-    # China Concept / ADR ETFs
+    # US Indices (ETF proxies - free tier doesn't support index symbols)
+    {"symbol": "SPY", "name": "S&P 500", "category": "🇺🇸 美股", "currency": "USD"},
+    {"symbol": "QQQ", "name": "纳斯达克", "category": "🇺🇸 美股", "currency": "USD"},
+    {"symbol": "DIA", "name": "道琼斯", "category": "🇺🇸 美股", "currency": "USD"},
+    # Asia-Pacific (ETF proxies)
+    {"symbol": "EWH", "name": "香港ETF", "category": "🌏 亚太", "currency": "USD"},
+    {"symbol": "EWJ", "name": "日本ETF", "category": "🌏 亚太", "currency": "USD"},
+    {"symbol": "FXI", "name": "中国大盘ETF", "category": "🌏 亚太", "currency": "USD"},
+    # China Concept / ADR
     {"symbol": "KWEB", "name": "中概互联ETF", "category": "🇨🇳 中概股", "currency": "USD"},
-    {"symbol": "FXI", "name": "中国大盘ETF", "category": "🇨🇳 中概股", "currency": "USD"},
-    # Precious Metals (forex-style on Twelve Data)
+    # Precious Metals
     {"symbol": "XAU/USD", "name": "黄金", "category": "🥇 贵金属", "currency": "USD"},
-    {"symbol": "XAG/USD", "name": "白银", "category": "🥇 贵金属", "currency": "USD"},
-    {"symbol": "XPT/USD", "name": "铂金", "category": "🥇 贵金属", "currency": "USD"},
+    {"symbol": "SLV", "name": "白银ETF", "category": "🥇 贵金属", "currency": "USD"},
+    {"symbol": "PPLT", "name": "铂金ETF", "category": "🥇 贵金属", "currency": "USD"},
     # Industrial Metals
-    {"symbol": "XCU/USD", "name": "铜", "category": "🔧 工业金属", "currency": "USD"},
+    {"symbol": "CPER", "name": "铜ETF", "category": "🔧 工业金属", "currency": "USD"},
     # Lithium (no direct futures; LIT ETF as proxy)
     {"symbol": "LIT", "name": "锂电池ETF", "category": "🔋 锂/新能源", "currency": "USD"},
     # Energy
-    {"symbol": "XBR/USD", "name": "布伦特原油", "category": "⛽ 能源", "currency": "USD"},
+    {"symbol": "USO", "name": "原油ETF", "category": "⛽ 能源", "currency": "USD"},
     # Crypto
     {"symbol": "BTC/USD", "name": "比特币", "category": "₿ 加密货币", "currency": "USD"},
 ]
@@ -118,6 +114,10 @@ def fetch_global_market_snapshot() -> dict:
 
     for i in range(0, len(all_symbols), batch_size):
         batch = all_symbols[i:i + batch_size]
+        if i > 0:
+            # Free tier: 8 credits/minute. Wait between batches.
+            logger.info("[global_market] Rate limit pause (61s between batches)")
+            time.sleep(61)
         result = _fetch_quotes_batch(batch, api_key)
         raw_quotes.update(result)
 

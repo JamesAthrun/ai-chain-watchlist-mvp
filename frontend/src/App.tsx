@@ -43,7 +43,7 @@ export default function App() {
             setMessages((prev) => [...prev, { role: 'user', content: '🌍 全球市场' }])
             setLoading(true)
             try {
-                const data = await getGlobalMarket(true)
+                const data = await getGlobalMarket(false)
                 setMessages((prev) => [...prev, { role: 'assistant', content: formatGlobalMarket(data) }])
                 setConnected(true)
             } catch (err) {
