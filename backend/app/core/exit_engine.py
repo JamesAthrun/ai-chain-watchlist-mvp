@@ -11,6 +11,7 @@ from typing import Optional
 from app.core.models import PortfolioSummary, PositionInfo, TickerSnapshot
 from app.core.technical_analysis import TechnicalIndicators
 from app.core.stock_scorer import TICKER_CATEGORY
+from app.core.trend_context import build_trend_context, classify_trend_status
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +108,12 @@ def _evaluate_position(
     smh_snapshot: Optional[TickerSnapshot],
     pos_type: str,
     portfolio: PortfolioSummary,
+    smh_ta: Optional[TechnicalIndicators] = None,
 ) -> dict:
-    """Evaluate a single position and return exit plan dict."""
+    """Evaluate a single position and return exit plan dict.
+
+    Uses trend context to distinguish normal pullbacks from real trend breaks.
+    """
     ticker = position.ticker
     avg_cost = position.avg_cost
     shares = position.shares
@@ -126,6 +131,8 @@ def _evaluate_position(
     # Technical data
     ma20 = ta.ma20 if ta and ta.data_available else 0.0
     ma50 = ta.ma50 if ta and ta.data_available else 0.0
+    ma100 = ta.ma100 if ta and ta.data_available else 0.0
+    ma200 = ta.ma200 if ta and ta.data_available else 0.0
     rsi = ta.rsi_14 if ta and ta.data_available else 50.0
     atr = ta.atr_14 if ta and ta.data_available else 0.0
     days_below_ma20 = ta.days_below_ma20 if ta and ta.data_available else 0
@@ -136,7 +143,19 @@ def _evaluate_position(
     swing_high = ta.swing_high if ta and ta.data_available else 0.0
     macd_hist = ta.macd_hist if ta and ta.data_available else 0.0
 
-    # Relative strength vs SMH
+    # Trend context
+    trend_ctx = None
+    trend_status = "SHORT_TERM_BREAK_ONLY"
+    if ta and ta.data_available:
+        trend_ctx = build_trend_context(ta, smh_ta)
+        trend_status = trend_ctx["trendStatus"]
+
+    # Multi-timeframe relative strength
+    rs_20d = ta.rs_20d_vs_smh if ta and ta.data_available else 0.0
+    rs_60d = ta.rs_60d_vs_smh if ta and ta.data_available else 0.0
+    ma50_slope = ta.ma50_slope_pct if ta and ta.data_available else 0.0
+
+    # Relative strength vs SMH (1-day, for backward compat)
     rs_vs_smh = 0.0
     if smh_snapshot and not smh_snapshot.data_missing and smh_snapshot.prev_close > 0:
         smh_return = smh_snapshot.pct_change_from_prev_close
@@ -152,14 +171,14 @@ def _evaluate_position(
     dist_to_support_pct = ((current_price - nearest_support) / current_price * 100) if nearest_support and current_price > 0 else None
     dist_to_resistance_pct = ((nearest_resistance - current_price) / current_price * 100) if nearest_resistance and current_price > 0 else None
 
-    # --- Priority-based action evaluation ---
+    # --- Priority-based action evaluation (trend-context-aware) ---
     action = "HOLD"
     confidence = "MEDIUM"
     reasoning = []
     trim_plan = []
     risk_plan = []
 
-    # ① Hard stop-loss
+    # ① Hard stop-loss (unchanged — always enforced)
     if gain_pct <= th["max_loss_pct"]:
         if pos_type in ("HIGH_BETA", "LEVERAGED_ETF"):
             action = "EXIT"
@@ -170,14 +189,44 @@ def _evaluate_position(
             confidence = "HIGH"
             reasoning.append(f"亏损{gain_pct:.1f}%超止损线且跌破MA50")
         else:
-            action = "TRIM_1_2"
+            action = "REDUCE_1_2"
             confidence = "HIGH"
             reasoning.append(f"亏损{gain_pct:.1f}%接近止损线{th['max_loss_pct']}%")
 
-    # ② MA50 breakdown
-    elif ma50 > 0 and current_price > 0 and current_price < ma50:
-        if pos_type in ("CORE", "SEMI_CORE"):
-            action = "TRIM_1_2"
+    # ② Long trend break (below MA200 or below MA100 with weak 60d RS)
+    elif trend_status == "LONG_TREND_BREAK":
+        if pos_type == "CORE":
+            action = "REDUCE_1_2"
+            confidence = "HIGH"
+            reasoning.append(f"长期趋势破坏: 价格低于MA100/MA200，60日相对强度弱")
+        else:
+            action = "EXIT"
+            confidence = "HIGH"
+            reasoning.append(f"长期趋势破坏: 价格低于MA100/MA200")
+
+    # ③ Medium trend break (below MA50 with weak 20d RS)
+    elif trend_status == "MEDIUM_TREND_BREAK":
+        if pos_type == "CORE":
+            action = "REDUCE_1_3"
+            confidence = "HIGH"
+            reasoning.append(f"中期趋势走弱: 跌破MA50且20日弱于SMH({rs_20d:+.1f}%)")
+        elif pos_type in ("SEMI_CORE", "CYCLICAL"):
+            action = "REDUCE_1_2"
+            confidence = "HIGH"
+            reasoning.append(f"中期趋势走弱: 跌破MA50且20日弱于SMH({rs_20d:+.1f}%)")
+        else:
+            action = "EXIT"
+            confidence = "HIGH"
+            reasoning.append(f"中期趋势破坏: 跌破MA50")
+
+    # ④ MA50 breakdown without confirmed trend context
+    elif ma50 > 0 and current_price > 0 and current_price < ma50 and trend_status not in ("PULLBACK_IN_UPTREND",):
+        if pos_type in ("CORE",):
+            action = "REDUCE_1_3"
+            confidence = "MEDIUM"
+            reasoning.append(f"价格${current_price:.2f}跌破MA50(${ma50:.2f})")
+        elif pos_type in ("SEMI_CORE",):
+            action = "REDUCE_1_2"
             confidence = "HIGH"
             reasoning.append(f"价格${current_price:.2f}跌破MA50(${ma50:.2f})")
         else:
@@ -185,44 +234,74 @@ def _evaluate_position(
             confidence = "HIGH"
             reasoning.append(f"价格${current_price:.2f}跌破MA50(${ma50:.2f})")
 
-    # ③ Consecutive MA20 breakdown
+    # ⑤ Consecutive MA20 breakdown — now trend-context-aware
     elif days_below_ma20 >= max(1, th["ma20_days_trim"]):
         if pos_type == "LEVERAGED_ETF":
             action = "EXIT"
             confidence = "HIGH"
             reasoning.append(f"收盘价连续{days_below_ma20}天低于MA20")
+
         elif pos_type == "HIGH_BETA":
             if days_below_ma20 >= 2:
-                action = "EXIT"
+                action = "REDUCE_1_2"
                 confidence = "HIGH"
             else:
-                action = "TRIM_1_2"
+                action = "REDUCE_1_3"
                 confidence = "MEDIUM"
             reasoning.append(f"收盘价连续{days_below_ma20}天低于MA20")
+
         elif pos_type == "CORE":
-            action = "TRIM_1_3"
-            confidence = "MEDIUM"
-            reasoning.append(f"收盘价连续{days_below_ma20}天低于MA20，核心仓位先减1/3")
-        else:
-            # SEMI_CORE, CYCLICAL
-            if rs_vs_smh < 0:
-                action = "TRIM_1_2"
+            # Core: use trend context to decide severity
+            if trend_status == "PULLBACK_IN_UPTREND":
+                action = "WATCH_PULLBACK"
+                confidence = "LOW"
+                reasoning.append(f"连续{days_below_ma20}天低于MA20，但MA50上升且相对强度正常，属上升趋势回调")
+            elif trend_status == "SHORT_TERM_BREAK_ONLY" and ma50 > 0 and current_price > ma50 and ma50_slope > 0:
+                action = "WATCH_PULLBACK"
+                confidence = "MEDIUM"
+                reasoning.append(f"连续{days_below_ma20}天低于MA20，MA50仍上升，关注是否进一步走弱")
+            else:
+                action = "TRIM_RISK"
+                confidence = "MEDIUM"
+                reasoning.append(f"连续{days_below_ma20}天低于MA20，核心仓位风险减持")
+
+        elif pos_type == "SEMI_CORE":
+            if trend_status == "PULLBACK_IN_UPTREND" and rs_20d >= 0:
+                action = "WATCH_PULLBACK"
+                confidence = "LOW"
+                reasoning.append(f"连续{days_below_ma20}天低于MA20，属上升趋势回调")
+            elif ma50 > 0 and current_price > ma50:
+                action = "WATCH"
+                confidence = "MEDIUM"
+                reasoning.append(f"连续{days_below_ma20}天低于MA20，但仍在MA50上方")
+            else:
+                action = "REDUCE_1_3"
+                confidence = "MEDIUM"
+                reasoning.append(f"连续{days_below_ma20}天低于MA20")
+
+        elif pos_type == "CYCLICAL":
+            if trend_status == "PULLBACK_IN_UPTREND" and rs_20d >= 0:
+                action = "WATCH_PULLBACK"
+                confidence = "LOW"
+                reasoning.append(f"连续{days_below_ma20}天低于MA20，属上升趋势回调")
+            elif rs_20d < 0:
+                action = "REDUCE_1_3"
                 reasoning.append(f"连续{days_below_ma20}天低于MA20且弱于SMH")
             else:
-                action = "TRIM_1_3"
+                action = "WATCH"
                 reasoning.append(f"连续{days_below_ma20}天低于MA20")
             confidence = "MEDIUM"
 
-    # ④ Trailing profit protection
+    # ⑥ Trailing profit protection
     elif gain_pct >= 10 and drawdown_from_high_pct <= th["trailing_stop_pct"]:
         if pos_type in ("HIGH_BETA", "LEVERAGED_ETF"):
-            action = "TRIM_1_2"
+            action = "REDUCE_1_2"
         else:
-            action = "TRIM_1_3"
+            action = "TRIM_PROFIT"
         confidence = "MEDIUM"
         reasoning.append(f"盈利{gain_pct:.1f}%但从高点回撤{drawdown_from_high_pct:.1f}%触发追踪止盈")
 
-    # ⑤ Resistance-based profit taking
+    # ⑦ Resistance-based profit taking
     elif dist_to_resistance_pct is not None and dist_to_resistance_pct <= 2:
         should_trim = False
         if pos_type == "CORE":
@@ -233,30 +312,30 @@ def _evaluate_position(
             should_trim = gain_pct >= 5
 
         if should_trim:
-            action = "TRIM_1_3" if pos_type not in ("HIGH_BETA", "LEVERAGED_ETF") else "TRIM_1_2"
+            action = "TRIM_PROFIT" if pos_type not in ("HIGH_BETA", "LEVERAGED_ETF") else "REDUCE_1_2"
             confidence = "MEDIUM"
             reasoning.append(f"价格接近阻力位${nearest_resistance:.2f}(距离{dist_to_resistance_pct:.1f}%)")
 
-    # ⑥ Fixed gain profit taking (tier 1)
+    # ⑧ Fixed gain profit taking (tier 2)
     elif gain_pct >= th["profit_2_pct"]:
-        action = "TRIM_1_3"
+        action = "TRIM_PROFIT"
         confidence = "MEDIUM"
         reasoning.append(f"盈利{gain_pct:.1f}%达到第二止盈目标{th['profit_2_pct']}%")
 
+    # ⑨ Fixed gain profit taking (tier 1)
     elif gain_pct >= th["profit_1_pct"]:
-        action = "TRIM_1_3"
+        action = "TRIM_PROFIT"
         confidence = "LOW"
         reasoning.append(f"盈利{gain_pct:.1f}%达到第一止盈目标{th['profit_1_pct']}%")
 
-    # ⑦ RSI overbought confirmation
+    # ⑩ RSI overbought confirmation
     elif rsi >= th["rsi_trim"] and gain_pct >= th["rsi_gain_min"]:
-        action = "TRIM_1_3" if pos_type in ("CORE", "SEMI_CORE") else "TRIM_1_2"
+        action = "TRIM_PROFIT" if pos_type in ("CORE", "SEMI_CORE") else "REDUCE_1_3"
         confidence = "LOW"
         reasoning.append(f"RSI={rsi:.0f}过热" + (f"且盈利{gain_pct:.1f}%" if gain_pct > 0 else ""))
 
-    # ⑧ Default: HOLD or WATCH
+    # ⑪ Default: HOLD or WATCH
     else:
-        # Check if close to any trigger
         if gain_pct > 0 and dist_to_resistance_pct is not None and dist_to_resistance_pct <= 5:
             action = "WATCH"
             reasoning.append(f"盈利{gain_pct:.1f}%，接近阻力位(距离{dist_to_resistance_pct:.1f}%)")
@@ -275,33 +354,39 @@ def _evaluate_position(
             else:
                 reasoning.append(f"亏损{gain_pct:.1f}%但未触发止损")
 
-    # MACD bearish cross as confirmation (increase confidence if aligned)
-    if macd_hist < 0 and action in ("TRIM_1_3", "TRIM_1_2", "WATCH"):
+    # MACD bearish cross as confirmation
+    if macd_hist < 0 and action in ("TRIM_PROFIT", "TRIM_RISK", "REDUCE_1_3", "REDUCE_1_2", "WATCH"):
         if "MACD" not in " ".join(reasoning):
             reasoning.append("MACD空头排列确认")
         if confidence == "LOW":
             confidence = "MEDIUM"
 
     # Relative strength note
-    if rs_vs_smh < -2 and action in ("TRIM_1_3", "TRIM_1_2", "REDUCE_2_3", "EXIT"):
+    if rs_vs_smh < -2 and action in ("TRIM_PROFIT", "TRIM_RISK", "REDUCE_1_3", "REDUCE_1_2", "REDUCE_2_3", "EXIT"):
         reasoning.append(f"弱于SMH({rs_vs_smh:+.1f}%)")
 
+    # Trend context note for pullback situations
+    if trend_status == "PULLBACK_IN_UPTREND" and action in ("WATCH_PULLBACK", "WATCH"):
+        sector = trend_ctx.get("sectorTrend", "NEUTRAL") if trend_ctx else "NEUTRAL"
+        if sector == "PULLBACK":
+            reasoning.append("板块整体回调，非个股独立走弱")
+        reasoning.append(f"MA50斜率{ma50_slope:+.2f}%，中期趋势仍在")
+
     # --- Build trim plan (future triggers) ---
-    if action == "HOLD" or action == "WATCH":
-        # Show what would trigger a trim
+    if action in ("HOLD", "WATCH", "WATCH_PULLBACK"):
         if nearest_resistance and current_price > 0:
             trim_price = nearest_resistance * 0.98
             trim_plan.append({
                 "trigger": f"价格 >= ${trim_price:.2f} (阻力位98%)" + (f" 且盈利>={th['profit_1_pct']}%" if pos_type == "CORE" else ""),
                 "price": round(trim_price, 2),
-                "action": "TRIM_1_3",
+                "action": "TRIM_PROFIT",
             })
         if gain_pct < th["profit_1_pct"]:
             profit_target = avg_cost * (1 + th["profit_1_pct"] / 100)
             trim_plan.append({
                 "trigger": f"盈利 >= {th['profit_1_pct']}%",
                 "price": round(profit_target, 2),
-                "action": "TRIM_1_3",
+                "action": "TRIM_PROFIT",
             })
 
     # --- Build risk plan (stop triggers) ---
@@ -309,19 +394,25 @@ def _evaluate_position(
         risk_plan.append({
             "trigger": f"连续{th['ma20_days_trim']}天收盘低于MA20(${ma20:.2f})",
             "price": round(ma20, 2),
-            "action": "TRIM_1_2" if pos_type in ("CORE", "SEMI_CORE") else "EXIT",
+            "action": "WATCH" if pos_type == "CORE" else ("REDUCE_1_3" if pos_type == "SEMI_CORE" else "REDUCE_1_2"),
         })
     if ma50 > 0:
         risk_plan.append({
-            "trigger": f"收盘跌破MA50(${ma50:.2f})",
+            "trigger": f"收盘跌破MA50(${ma50:.2f})且20日弱于SMH",
             "price": round(ma50, 2),
-            "action": "TRIM_1_2" if pos_type == "CORE" else "EXIT",
+            "action": "REDUCE_1_3" if pos_type == "CORE" else ("REDUCE_1_2" if pos_type == "SEMI_CORE" else "EXIT"),
+        })
+    if ma100 > 0:
+        risk_plan.append({
+            "trigger": f"收盘跌破MA100(${ma100:.2f})且60日弱于SMH",
+            "price": round(ma100, 2),
+            "action": "REDUCE_1_2" if pos_type == "CORE" else "EXIT",
         })
     stop_price = avg_cost * (1 + th["max_loss_pct"] / 100)
     risk_plan.append({
         "trigger": f"亏损超过{th['max_loss_pct']}%",
         "price": round(stop_price, 2),
-        "action": "EXIT" if pos_type in ("HIGH_BETA", "LEVERAGED_ETF") else "TRIM_1_2",
+        "action": "EXIT" if pos_type in ("HIGH_BETA", "LEVERAGED_ETF") else "REDUCE_1_2",
     })
 
     return {
@@ -334,6 +425,8 @@ def _evaluate_position(
         "gainPct": round(gain_pct, 2),
         "ma20": round(ma20, 2),
         "ma50": round(ma50, 2),
+        "ma100": round(ma100, 2),
+        "ma200": round(ma200, 2),
         "daysBelowMA20": days_below_ma20,
         "daysBelowMA50": days_below_ma50,
         "nearestSupport": round(nearest_support, 2) if nearest_support else None,
@@ -342,8 +435,13 @@ def _evaluate_position(
         "rsi": round(rsi, 1),
         "atr": round(atr, 2),
         "relativeStrengthVsSMH": rs_vs_smh,
+        "relativeStrength20dVsSMH": round(rs_20d, 2),
+        "relativeStrength60dVsSMH": round(rs_60d, 2),
+        "ma50SlopePct": round(ma50_slope, 3),
         "swingHigh": round(swing_high, 2),
         "drawdownFromHighPct": round(drawdown_from_high_pct, 2),
+        "trendStatus": trend_status,
+        "trendContext": trend_ctx,
         "action": action,
         "confidence": confidence,
         "trimPlan": trim_plan,
@@ -393,6 +491,7 @@ def generate_exit_plan(
     Returns structured dict with portfolio risk summary and per-position exit plans.
     """
     smh_snapshot = snapshots.get("SMH")
+    smh_ta = ta_results.get("SMH")
 
     exit_plans = []
     action_counts = {"HOLD": 0, "WATCH": 0, "TRIM": 0, "EXIT": 0}
@@ -410,7 +509,7 @@ def generate_exit_plan(
         ta = ta_results.get(ticker)
         pos_type = classify_position_type(ticker, watchlist)
 
-        plan = _evaluate_position(pos, snapshot, ta, smh_snapshot, pos_type, portfolio)
+        plan = _evaluate_position(pos, snapshot, ta, smh_snapshot, pos_type, portfolio, smh_ta)
 
         # Adjust for high portfolio exposure: be more aggressive with trimming
         port_risk = portfolio.position_pct
@@ -424,7 +523,7 @@ def generate_exit_plan(
         act = plan["action"]
         if act == "HOLD":
             action_counts["HOLD"] += 1
-        elif act == "WATCH":
+        elif act in ("WATCH", "WATCH_PULLBACK"):
             action_counts["WATCH"] += 1
         elif act == "EXIT":
             action_counts["EXIT"] += 1

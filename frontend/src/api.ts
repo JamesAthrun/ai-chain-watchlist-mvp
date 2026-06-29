@@ -117,3 +117,15 @@ export async function getExitPlan(): Promise<Record<string, unknown>> {
     if (!resp.ok) throw new Error(`API error: ${resp.status}`)
     return resp.json()
 }
+
+export async function postAIExitAnalysis(): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/ai-exit-analysis`, { method: 'POST' })
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
+
+export async function getPullbackAddPlan(): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/pullback-add-plan`)
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
