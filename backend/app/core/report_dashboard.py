@@ -124,7 +124,7 @@ def generate_dashboard_report(
         reverse=True,
     )
 
-    for ticker in sorted_tickers[:15]:  # Top 15 in report
+    for ticker in sorted_tickers:
         snap = snapshots[ticker]
         ta = ta_results.get(ticker)
 
