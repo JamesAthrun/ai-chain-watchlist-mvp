@@ -88,6 +88,10 @@ def _call_deepseek(template_report: str, context: str) -> str:
     except Exception as e:
         logger.warning(f"[llm] DeepSeek API call failed: {e}")
         return template_report
+
+
+def _call_openai(template_report: str, context: str) -> str:
+    """Call OpenAI API."""
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
         logger.info("OPENAI_API_KEY not set, returning template report")

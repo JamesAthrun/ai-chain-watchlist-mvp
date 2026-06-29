@@ -18,6 +18,8 @@ def analyze_portfolio(
     bucket_exposure: dict[str, float] = {}
     single_ticker_exposure: dict[str, float] = {}
 
+    # First pass: compute invested_value for account_value
+    raw_positions = []
     for pos in portfolio_data.get("positions", []):
         ticker = pos.get("ticker", "")
         shares = pos.get("shares", 0.0)
@@ -35,7 +37,12 @@ def analyze_portfolio(
             current_value = shares * avg_cost  # fallback
 
         invested_value += current_value
+        raw_positions.append((ticker, shares, avg_cost, manual_value, bucket, intent, current_value))
 
+    # Dynamic account value = cash + market value of all positions
+    account_value = cash + invested_value
+
+    for ticker, shares, avg_cost, manual_value, bucket, intent, current_value in raw_positions:
         pct_of_account = (current_value / account_value * 100) if account_value > 0 else 0.0
 
         positions.append(
@@ -59,9 +66,6 @@ def analyze_portfolio(
         single_ticker_exposure[ticker] = (
             single_ticker_exposure.get(ticker, 0.0) + current_value
         )
-
-    # Dynamic account value = cash + market value of all positions
-    account_value = cash + invested_value
 
     cash_pct = (cash / account_value * 100) if account_value > 0 else 0.0
     position_pct = (invested_value / account_value * 100) if account_value > 0 else 0.0

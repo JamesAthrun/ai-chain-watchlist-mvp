@@ -5,6 +5,7 @@ import type { Message } from './components/MessageList'
 import QuickActions from './components/QuickActions'
 import ChatInput from './components/ChatInput'
 import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore } from './api'
+import type { MarketSummary } from './api'
 
 export default function App() {
     const [messages, setMessages] = useState<Message[]>([])
@@ -264,7 +265,7 @@ function formatTradeHistory(data: { trades: Record<string, unknown>[]; count: nu
     return text
 }
 
-function formatMarketSummary(data: Record<string, unknown>): string {
+function formatMarketSummary(data: Record<string, unknown> | MarketSummary): string {
     const d = data as { market_regime?: string; bucket_scores?: { label: string; avg_pct_change: number }[]; add_candidates?: { ticker: string }[]; do_not_buy?: { ticker: string }[]; llm_analysis?: string }
     let text = `**市场状态**: ${d.market_regime || 'unknown'}\n\n`
     if (d.bucket_scores) {
