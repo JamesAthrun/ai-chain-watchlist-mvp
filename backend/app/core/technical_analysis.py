@@ -46,8 +46,11 @@ class TechnicalIndicators:
         self.fib_618: float = 0.0
         self.swing_high: float = 0.0
         self.swing_low: float = 0.0
+        self.ma50: float = 0.0
         self.volume_ratio: float = 1.0  # today vol / 5-day avg vol
         self.trend: str = "neutral"  # up / down / neutral
+        self.days_below_ma20: int = 0  # consecutive closes below MA20
+        self.days_below_ma50: int = 0  # consecutive closes below MA50
         self.data_available: bool = False
         self.error: Optional[str] = None
 
@@ -61,6 +64,9 @@ class TechnicalIndicators:
     def nearest_resistance(self) -> Optional[float]:
         return self.resistance_levels[0] if self.resistance_levels else None
 
+    def second_resistance(self) -> Optional[float]:
+        return self.resistance_levels[1] if len(self.resistance_levels) >= 2 else None
+
     def to_dict(self) -> dict:
         return {
             "ticker": self.ticker,
@@ -69,6 +75,7 @@ class TechnicalIndicators:
             "ma5": round(self.ma5, 2),
             "ma10": round(self.ma10, 2),
             "ma20": round(self.ma20, 2),
+            "ma50": round(self.ma50, 2),
             "ma60": round(self.ma60, 2),
             "rsi_14": round(self.rsi_14, 1),
             "macd": round(self.macd, 4),
@@ -84,6 +91,8 @@ class TechnicalIndicators:
             "swing_low": round(self.swing_low, 2),
             "volume_ratio": round(self.volume_ratio, 2),
             "trend": self.trend,
+            "days_below_ma20": self.days_below_ma20,
+            "days_below_ma50": self.days_below_ma50,
         }
 
 
@@ -379,6 +388,21 @@ def analyze_batch_technical(tickers: list[str], period: str = "3mo") -> dict[str
     return results
 
 
+def _count_consecutive_below(closes: pd.Series, ma_series: pd.Series) -> int:
+    """Count consecutive recent closes below a moving average (from most recent backwards)."""
+    count = 0
+    for i in range(len(closes) - 1, -1, -1):
+        c = closes.iloc[i]
+        m = ma_series.iloc[i]
+        if pd.isna(m):
+            break
+        if c < m:
+            count += 1
+        else:
+            break
+    return count
+
+
 def _compute_indicators(ticker: str, df: pd.DataFrame) -> TechnicalIndicators:
     """Compute all technical indicators from a DataFrame with OHLCV columns."""
     result = TechnicalIndicators(ticker=ticker)
@@ -392,6 +416,7 @@ def _compute_indicators(ticker: str, df: pd.DataFrame) -> TechnicalIndicators:
     result.ma5 = float(closes.iloc[-5:].mean()) if len(closes) >= 5 else 0.0
     result.ma10 = float(closes.iloc[-10:].mean()) if len(closes) >= 10 else 0.0
     result.ma20 = float(closes.iloc[-20:].mean()) if len(closes) >= 20 else 0.0
+    result.ma50 = float(closes.iloc[-50:].mean()) if len(closes) >= 50 else 0.0
     result.ma60 = float(closes.iloc[-60:].mean()) if len(closes) >= 60 else 0.0
 
     # RSI
@@ -421,6 +446,15 @@ def _compute_indicators(ticker: str, df: pd.DataFrame) -> TechnicalIndicators:
 
     # Trend
     result.trend = _determine_trend(result.ma5, result.ma10, result.ma20, current_price)
+
+    # Days below MA20/MA50 (consecutive recent closes below the MA)
+    if len(closes) >= 20 and result.ma20 > 0:
+        ma20_series = closes.rolling(20).mean()
+        result.days_below_ma20 = _count_consecutive_below(closes, ma20_series)
+    if len(closes) >= 50 and result.ma50 > 0:
+        ma50_series = closes.rolling(50).mean()
+        result.days_below_ma50 = _count_consecutive_below(closes, ma50_series)
+
     result.data_available = True
 
     return result

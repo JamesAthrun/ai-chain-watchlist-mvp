@@ -111,3 +111,9 @@ export async function getTickerScore(ticker: string): Promise<Record<string, unk
     if (!resp.ok) throw new Error(`API error: ${resp.status}`)
     return resp.json()
 }
+
+export async function getExitPlan(): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/exit-plan`)
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
