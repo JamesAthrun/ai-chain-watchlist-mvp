@@ -6,6 +6,7 @@ Data source priority: Polygon proxy (historical bars) → yfinance fallback.
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -318,7 +319,7 @@ def _fetch_bars_polygon(ticker: str, days: int = 90) -> Optional[pd.DataFrame]:
 def analyze_batch_technical(tickers: list[str], period: str = "3mo") -> dict[str, TechnicalIndicators]:
     """Analyze multiple tickers. Uses Polygon proxy for historical bars, yfinance as fallback.
 
-    Polygon proxy doesn't rate-limit like yfinance does from cloud servers.
+    Polygon proxy requests run concurrently (up to 8 threads) to avoid timeout.
     """
     valid_tickers = [t for t in tickers if not t.startswith("^")]
     results = {}
@@ -330,25 +331,28 @@ def analyze_batch_technical(tickers: list[str], period: str = "3mo") -> dict[str
     polygon_available = bool(os.getenv("POLYGON_PROXY_URL") and os.getenv("POLYGON_PROXY_KEY"))
     yf_fallback_tickers = []
 
-    for ticker in valid_tickers:
+    def _fetch_and_compute(ticker: str) -> tuple[str, TechnicalIndicators, bool]:
+        """Fetch bars and compute indicators for one ticker. Returns (ticker, result, success)."""
         result = TechnicalIndicators(ticker=ticker)
-        df = None
-
-        # Try Polygon proxy first
-        if polygon_available:
-            df = _fetch_bars_polygon(ticker, days)
-
+        df = _fetch_bars_polygon(ticker, days) if polygon_available else None
         if df is not None and len(df) >= 5:
             try:
                 result = _compute_indicators(ticker, df)
+                return (ticker, result, True)
             except Exception as e:
                 logger.warning(f"[ta] {ticker} indicator calc failed: {e}")
                 result.error = str(e)
+                return (ticker, result, False)
+        return (ticker, result, False)
+
+    # Run Polygon fetches concurrently
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_fetch_and_compute, t): t for t in valid_tickers}
+        for future in as_completed(futures):
+            ticker, result, success = future.result()
             results[ticker] = result
-        else:
-            # Collect for yfinance batch fallback
-            yf_fallback_tickers.append(ticker)
-            results[ticker] = result
+            if not success:
+                yf_fallback_tickers.append(ticker)
 
     # Batch fallback via yfinance for tickers where Polygon failed
     if yf_fallback_tickers:
