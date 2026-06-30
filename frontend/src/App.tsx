@@ -49,11 +49,20 @@ export default function App() {
             return
         }
         if (message === '__DECISIONS__') {
-            setMessages((prev) => [...prev, { role: 'user', content: '🧠 决策中心' }])
+            setMessages((prev) => [...prev, { role: 'user', content: enhance ? '🧠 决策中心 (AI增强)' : '🧠 决策中心' }])
             setLoading(true)
             try {
                 const data = await getDecisions()
-                setMessages((prev) => [...prev, { role: 'assistant', content: formatDecisions(data) }])
+                let content = formatDecisions(data)
+                if (enhance) {
+                    try {
+                        const aiResp = await sendChat(`请根据以下决策中心数据，给出今日操作优先级建议（最多3条），重点关注信号冲突和最佳机会：\n${content}`)
+                        content += `\n\n---\n### 🤖 AI 建议\n${aiResp.answer || ''}`
+                    } catch {
+                        content += '\n\n> ⚠️ AI 增强分析暂不可用'
+                    }
+                }
+                setMessages((prev) => [...prev, { role: 'assistant', content }])
                 setConnected(true)
             } catch (err) {
                 setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
