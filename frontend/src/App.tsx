@@ -72,11 +72,20 @@ export default function App() {
             return
         }
         if (message === '__GLOBAL_MARKET__') {
-            setMessages((prev) => [...prev, { role: 'user', content: '🌍 全球市场' }])
+            setMessages((prev) => [...prev, { role: 'user', content: enhance ? '🌍 全球市场 (AI增强)' : '🌍 全球市场' }])
             setLoading(true)
             try {
                 const data = await getGlobalMarket(false)
-                setMessages((prev) => [...prev, { role: 'assistant', content: formatGlobalMarket(data) }])
+                let content = formatGlobalMarket(data)
+                if (enhance) {
+                    try {
+                        const aiResp = await sendChat(`请根据以下全球市场数据，分析当前市场环境对我的持仓影响，给出风险提示和机会建议（最多3条）：\n${content}`)
+                        content += `\n\n---\n### 🤖 AI 建议\n${aiResp.answer || ''}`
+                    } catch {
+                        content += '\n\n> ⚠️ AI 增强分析暂不可用'
+                    }
+                }
+                setMessages((prev) => [...prev, { role: 'assistant', content }])
                 setConnected(true)
             } catch (err) {
                 setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
@@ -100,11 +109,20 @@ export default function App() {
             return
         }
         if (message === '__TRADE_HISTORY__') {
-            setMessages((prev) => [...prev, { role: 'user', content: '查看交易记录' }])
+            setMessages((prev) => [...prev, { role: 'user', content: enhance ? '📝 交易记录 (AI增强)' : '查看交易记录' }])
             setLoading(true)
             try {
                 const data = await getNewTrades(undefined, 20)
-                setMessages((prev) => [...prev, { role: 'assistant', content: formatNewTradeHistory(data) }])
+                let content = formatNewTradeHistory(data)
+                if (enhance) {
+                    try {
+                        const aiResp = await sendChat(`请根据以下近期交易记录，分析交易模式和改进建议（最多3条）：\n${content}`)
+                        content += `\n\n---\n### 🤖 AI 建议\n${aiResp.answer || ''}`
+                    } catch {
+                        content += '\n\n> ⚠️ AI 增强分析暂不可用'
+                    }
+                }
+                setMessages((prev) => [...prev, { role: 'assistant', content }])
                 setConnected(true)
             } catch (err) {
                 setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
@@ -114,11 +132,20 @@ export default function App() {
             return
         }
         if (message === '__DAILY_PLAN__') {
-            setMessages((prev) => [...prev, { role: 'user', content: '🎯 每日计划' }])
+            setMessages((prev) => [...prev, { role: 'user', content: enhance ? '🎯 每日计划 (AI增强)' : '🎯 每日计划' }])
             setLoading(true)
             try {
                 const data = await getDailyPlan()
-                setMessages((prev) => [...prev, { role: 'assistant', content: formatDailyPlan(data) }])
+                let content = formatDailyPlan(data)
+                if (enhance) {
+                    try {
+                        const aiResp = await sendChat(`请根据以下每日交易计划数据，给出执行优先级建议和需要特别注意的风险点（最多3条）：\n${content}`)
+                        content += `\n\n---\n### 🤖 AI 建议\n${aiResp.answer || ''}`
+                    } catch {
+                        content += '\n\n> ⚠️ AI 增强分析暂不可用'
+                    }
+                }
+                setMessages((prev) => [...prev, { role: 'assistant', content }])
                 setConnected(true)
             } catch (err) {
                 setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
