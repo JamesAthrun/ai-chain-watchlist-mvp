@@ -4,7 +4,7 @@ import MessageList from './components/MessageList'
 import type { Message } from './components/MessageList'
 import QuickActions from './components/QuickActions'
 import ChatInput from './components/ChatInput'
-import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan, postAIExitAnalysis, getGlobalMarket, getDecisions, createTrade, getNewTrades, getRebuildPositions } from './api'
+import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan, postAIExitAnalysis, getGlobalMarket, getDecisions, createTrade, getNewTrades, getRebuildPositions, adjustCash } from './api'
 import type { MarketSummary } from './api'
 
 export default function App() {
@@ -15,6 +15,7 @@ export default function App() {
     const [enhance, setEnhance] = useState(false)
     const [pendingTrade, setPendingTrade] = useState<Record<string, unknown> | null>(null)
     const [tradeMode, setTradeMode] = useState(false)
+    const [cashMode, setCashMode] = useState(false)
     const messagesEndRef = useRef<HTMLDivElement>(null)
 
     // Check backend connection on mount
@@ -36,6 +37,14 @@ export default function App() {
             setMessages((prev) => [
                 ...prev,
                 { role: 'assistant', content: '📝 请描述你的交易，例如：\n• "买了100股NVDA 均价135"\n• "卖了50股AVGO 180块"\n• "我现在持有 NVDA 200股成本130，MRVL 100股成本80"' },
+            ])
+            return
+        }
+        if (message === '__CASH_ADJUST__') {
+            setCashMode(true)
+            setMessages((prev) => [
+                ...prev,
+                { role: 'assistant', content: '💰 请输入现金调整：\n• 正数 = 入金，如 "5000" 或 "入金5000"\n• 负数 = 出金，如 "-2000" 或 "出金2000"' },
             ])
             return
         }
@@ -186,6 +195,41 @@ export default function App() {
                 setTradeMode(false)
                 return
             }
+        }
+
+        // Cash adjust mode
+        if (cashMode) {
+            setMessages((prev) => [...prev, { role: 'user', content: message }])
+            setLoading(true)
+            try {
+                const depositMatch = message.match(/入金\s*(\d+(?:\.\d+)?)/)
+                const withdrawMatch = message.match(/出金\s*(\d+(?:\.\d+)?)/)
+                let amount: number
+                let reason: string
+                if (depositMatch) {
+                    amount = parseFloat(depositMatch[1])
+                    reason = '入金'
+                } else if (withdrawMatch) {
+                    amount = -parseFloat(withdrawMatch[1])
+                    reason = '出金'
+                } else {
+                    amount = parseFloat(message.replace(/[^\d.-]/g, ''))
+                    reason = amount >= 0 ? '入金' : '出金'
+                }
+                if (isNaN(amount) || amount === 0) {
+                    setMessages((prev) => [...prev, { role: 'assistant', content: '❌ 无法识别金额，请输入数字，如 "5000" 或 "出金2000"' }])
+                } else {
+                    const result = await adjustCash(amount, reason) as { cash_after?: number }
+                    const direction = amount > 0 ? '入金' : '出金'
+                    setMessages((prev) => [...prev, { role: 'assistant', content: `✅ ${direction} $${Math.abs(amount).toLocaleString()} 成功！\n当前现金: $${(result.cash_after ?? 0).toLocaleString()}` }])
+                }
+            } catch (err) {
+                setMessages((prev) => [...prev, { role: 'assistant', content: `操作失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+            } finally {
+                setCashMode(false)
+                setLoading(false)
+            }
+            return
         }
 
         // Trade mode: parse natural language
@@ -356,7 +400,7 @@ export default function App() {
             ) : (
                 <QuickActions onAction={handleSend} disabled={loading} />
             )}
-            <ChatInput onSend={handleSend} disabled={loading} placeholder={tradeMode ? '描述交易，如：买了100股NVDA 均价135' : undefined} />
+            <ChatInput onSend={handleSend} disabled={loading} placeholder={tradeMode ? '描述交易，如：买了100股NVDA 均价135' : cashMode ? '输入金额，如：5000 或 出金2000' : undefined} />
         </div>
     )
 }

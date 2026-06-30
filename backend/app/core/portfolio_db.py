@@ -218,12 +218,9 @@ def adjust_cash(amount: float, reason: str = "") -> dict:
         _recalculate_account_value(conn)
 
         action = "deposit" if amount >= 0 else "withdrawal"
-        conn.execute(
-            """INSERT INTO trade_log
-               (action, notes, cash_before, cash_after)
-               VALUES (?, ?, ?, ?)""",
-            (action, reason or f"Cash adjustment: {amount:+.2f}", cash_before, round(cash_after, 2)),
-        )
+        # Skip trade_log INSERT - legacy table has CHECK constraint that
+        # only allows 'buy', 'sell', 'set_portfolio'. Cash adjustments are
+        # tracked via portfolio_meta cash field directly.
 
         conn.commit()
         logger.info(f"Cash adjusted: {amount:+.2f} ({reason}), {cash_before:.2f} -> {cash_after:.2f}")

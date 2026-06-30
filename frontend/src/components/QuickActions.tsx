@@ -18,6 +18,7 @@ const moreActions = [
     { label: '\u{1F4DC} \u4EA4\u6613\u8BB0\u5F55', message: '__TRADE_HISTORY__' },
     { label: '\u{1F3AF} \u4EEA\u8868\u76D8', message: '__DASHBOARD__' },
     { label: '\u{1F6CC} \u6302\u5355', message: '\u7761\u524D\u6302\u5355\u8BA1\u5212' },
+    { label: '\u{1F4B0} \u8C03\u73B0\u91D1', message: '__CASH_ADJUST__' },
 ]
 
 export default function QuickActions({ onAction, disabled }: QuickActionsProps) {

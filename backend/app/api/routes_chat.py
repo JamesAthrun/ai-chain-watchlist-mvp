@@ -68,13 +68,76 @@ async def chat(req: ChatRequest):
             lines = ["当前暂无明显不能接的标的。"]
         answer = "\n".join(lines)
     elif any(kw in msg for kw in ["能加", "加仓", "可以买", "候选"]):
-        if summary.add_candidates:
-            lines = ["高于开盘价且接近日高，可关注加仓:"]
-            for ts in summary.add_candidates:
-                lines.append(f"  {ts.ticker}")
+        # Check if user is asking about specific tickers
+        import re
+        mentioned_tickers = re.findall(r'(?<![A-Za-z])([A-Z]{2,5})(?![A-Za-z])', msg)
+        if mentioned_tickers:
+            # User asking about specific tickers — use AI with full context
+            from app.core.trade_history_context import build_all_contexts
+            from app.core.technical_analysis import analyze_batch_technical
+
+            trade_contexts = build_all_contexts()
+            ta_results = analyze_batch_technical(mentioned_tickers)
+
+            position_lines = []
+            for pos in portfolio.positions:
+                if pos.shares > 0:
+                    snap = snapshots.get(pos.ticker)
+                    current = snap.last_price if snap and not snap.data_missing else 0
+                    pnl_pct = ((current - pos.avg_cost) / pos.avg_cost * 100) if pos.avg_cost > 0 and current > 0 else 0
+                    position_lines.append(
+                        f"  {pos.ticker}: {pos.shares}股 成本${pos.avg_cost:.2f} 现价${current:.2f} {pnl_pct:+.1f}%"
+                    )
+
+            ctx_lines = []
+            for ticker in mentioned_tickers:
+                ctx = trade_contexts.get(ticker)
+                if ctx:
+                    tags = []
+                    if ctx.recently_added: tags.append("近期加仓过")
+                    if ctx.recently_trimmed: tags.append("近期减仓过")
+                    if ctx.cooldown_until: tags.append(f"冷却至{ctx.cooldown_until}")
+                    if ctx.adds_last_10_days: tags.append(f"10日内加仓{ctx.adds_last_10_days}次")
+                    if tags:
+                        ctx_lines.append(f"  {ticker}: {' | '.join(tags)}")
+
+                ta = ta_results.get(ticker)
+                if ta:
+                    rsi = getattr(ta, 'rsi_14', None) or 'N/A'
+                    ma20 = getattr(ta, 'ma20', None) or 'N/A'
+                    trend = getattr(ta, 'trend', None) or 'N/A'
+                    ctx_lines.append(f"  {ticker} 技术: RSI={rsi} MA20={ma20} 趋势={trend}")
+
+            import json
+            full_context = json.dumps({
+                "market_regime": summary.market_regime,
+                "account_value": portfolio.account_value,
+                "cash": portfolio.cash,
+                "cash_pct": (portfolio.cash / portfolio.account_value * 100) if portfolio.account_value else 0,
+                "positions": position_lines,
+                "trade_history_context": ctx_lines,
+                "question_tickers": mentioned_tickers,
+            }, ensure_ascii=False, indent=2)
+
+            system_prompt = (
+                "你是一个专业的AI半导体产业链投资组合助手。用户想了解特定标的的加仓建议。"
+                "请基于以下数据给出具体的加仓建议，包括：\n"
+                "1. 当前仓位权重是否过高/过低\n"
+                "2. 建议加仓金额（考虑现金余额和仓位平衡）\n"
+                "3. 建议的入场价位（参考技术面）\n"
+                "4. 风险提示（是否处于冷却期、是否反复加仓）\n"
+                "回答要简洁有数据支撑，给出具体数字。这不是投资建议，仅供参考。"
+            )
+            answer = free_chat(msg, full_context)
         else:
-            lines = ["当前暂无明显加仓候选。"]
-        answer = "\n".join(lines)
+            # Generic "加仓" query — show add candidates
+            if summary.add_candidates:
+                lines = ["高于开盘价且接近日高，可关注加仓:"]
+                for ts in summary.add_candidates:
+                    lines.append(f"  {ts.ticker}")
+            else:
+                lines = ["当前暂无明显加仓候选。"]
+            answer = "\n".join(lines)
     elif any(kw in msg for kw in ["强势", "强链路", "哪个板块强", "强于"]):
         strong_buckets = [
             bs for bs in summary.bucket_scores
@@ -102,14 +165,45 @@ async def chat(req: ChatRequest):
         )
         answer = enhance_report(report)
     else:
-        # Free chat with market context + RAG knowledge retrieval
+        # Free chat with market context + portfolio + RAG knowledge retrieval
         import json
         from app.core.vector_store import search_knowledge
+        from app.core.trade_history_context import build_all_contexts
+
+        # Build portfolio context
+        position_lines = []
+        for pos in portfolio.positions:
+            if pos.shares > 0:
+                snap = snapshots.get(pos.ticker)
+                current = snap.last_price if snap and not snap.data_missing else 0
+                pnl_pct = ((current - pos.avg_cost) / pos.avg_cost * 100) if pos.avg_cost > 0 and current > 0 else 0
+                position_lines.append(f"{pos.ticker}: {pos.shares}股 成本${pos.avg_cost:.2f} 现${current:.2f} {pnl_pct:+.1f}%")
+
+        # Trade history context for mentioned tickers
+        import re
+        mentioned_tickers = re.findall(r'(?<![A-Za-z])([A-Z]{2,5})(?![A-Za-z])', msg)
+        trade_ctx_lines = []
+        if mentioned_tickers:
+            trade_contexts = build_all_contexts()
+            for ticker in mentioned_tickers:
+                ctx = trade_contexts.get(ticker)
+                if ctx:
+                    tags = []
+                    if ctx.recently_added: tags.append("近期加仓")
+                    if ctx.recently_trimmed: tags.append("近期减仓")
+                    if ctx.cooldown_until: tags.append(f"冷却至{ctx.cooldown_until}")
+                    if tags:
+                        trade_ctx_lines.append(f"{ticker}: {' | '.join(tags)}")
 
         market_context = json.dumps({
             "market_regime": summary.market_regime,
-            "benchmark_strength": {k: v for k, v in summary.benchmark_strength.items()} if hasattr(summary, 'benchmark_strength') else {},
             "bucket_scores": [{"name": bs.label, "avg_pct": bs.avg_pct_change} for bs in summary.bucket_scores],
+            "portfolio": {
+                "account_value": portfolio.account_value,
+                "cash": portfolio.cash,
+                "positions": position_lines,
+            },
+            "trade_activity": trade_ctx_lines if trade_ctx_lines else None,
         }, ensure_ascii=False)
 
         # Retrieve relevant knowledge from vector store

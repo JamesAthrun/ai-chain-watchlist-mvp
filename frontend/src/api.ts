@@ -168,3 +168,13 @@ export async function getRebuildPositions(): Promise<Record<string, unknown>> {
     if (!resp.ok) throw new Error(`API error: ${resp.status}`)
     return resp.json()
 }
+
+export async function adjustCash(amount: number, reason: string): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/portfolio/cash`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount, reason }),
+    })
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
