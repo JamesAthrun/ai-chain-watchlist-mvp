@@ -67,6 +67,11 @@ def init_db():
             _seed_from_json(conn)
 
         conn.commit()
+
+        # Run trade ledger migrations
+        from app.core.migrations import run_migrations
+        run_migrations(conn)
+
         logger.info(f"Database initialized at {DB_PATH}")
     finally:
         conn.close()

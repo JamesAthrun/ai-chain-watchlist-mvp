@@ -4,7 +4,7 @@ import MessageList from './components/MessageList'
 import type { Message } from './components/MessageList'
 import QuickActions from './components/QuickActions'
 import ChatInput from './components/ChatInput'
-import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan, postAIExitAnalysis, getGlobalMarket } from './api'
+import { sendChat, getHealth, getMarketSummary, getSleepPlan, getDailyPlan, getPortfolio, parsePortfolio, confirmPortfolio, getTradeHistory, getDashboard, getTechnical, getTickerScore, getExitPlan, postAIExitAnalysis, getGlobalMarket, getDecisions, createTrade, getNewTrades, getRebuildPositions } from './api'
 import type { MarketSummary } from './api'
 
 export default function App() {
@@ -39,6 +39,20 @@ export default function App() {
             ])
             return
         }
+        if (message === '__DECISIONS__') {
+            setMessages((prev) => [...prev, { role: 'user', content: '🧠 决策中心' }])
+            setLoading(true)
+            try {
+                const data = await getDecisions()
+                setMessages((prev) => [...prev, { role: 'assistant', content: formatDecisions(data) }])
+                setConnected(true)
+            } catch (err) {
+                setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
+            } finally {
+                setLoading(false)
+            }
+            return
+        }
         if (message === '__GLOBAL_MARKET__') {
             setMessages((prev) => [...prev, { role: 'user', content: '🌍 全球市场' }])
             setLoading(true)
@@ -71,8 +85,8 @@ export default function App() {
             setMessages((prev) => [...prev, { role: 'user', content: '查看交易记录' }])
             setLoading(true)
             try {
-                const data = await getTradeHistory(20)
-                setMessages((prev) => [...prev, { role: 'assistant', content: formatTradeHistory(data) }])
+                const data = await getNewTrades(undefined, 20)
+                setMessages((prev) => [...prev, { role: 'assistant', content: formatNewTradeHistory(data) }])
                 setConnected(true)
             } catch (err) {
                 setMessages((prev) => [...prev, { role: 'assistant', content: `请求失败: ${err instanceof Error ? err.message : '未知错误'}` }])
@@ -130,12 +144,33 @@ export default function App() {
                 setMessages((prev) => [...prev, { role: 'user', content: '✅ 确认' }])
                 setLoading(true)
                 try {
-                    const result = await confirmPortfolio(pendingTrade)
-                    const status = (result as { status: string }).status
-                    setMessages((prev) => [...prev, {
-                        role: 'assistant',
-                        content: status === 'ok' ? '✅ 已记录！你可以点「💼 仓位」查看最新仓位。' : `❌ 记录失败: ${(result as { message?: string }).message || '未知错误'}`,
-                    }])
+                    if (pendingTrade._legacy) {
+                        // Legacy portfolio confirm path
+                        const { _legacy, ...parsed } = pendingTrade
+                        const result = await confirmPortfolio(parsed)
+                        const status = (result as { status: string }).status
+                        setMessages((prev) => [...prev, {
+                            role: 'assistant',
+                            content: status === 'ok' ? '✅ 已记录！你可以点「📉 持仓」查看最新仓位。' : `❌ 记录失败: ${(result as { message?: string }).message || '未知错误'}`,
+                        }])
+                    } else {
+                        // New trade ledger path
+                        const result = await createTrade({
+                            symbol: pendingTrade.symbol as string,
+                            side: pendingTrade.side as string,
+                            quantity: pendingTrade.quantity as number,
+                            price: pendingTrade.price as number,
+                            source: 'MANUAL',
+                        })
+                        const status = (result as { status: string }).status
+                        const sideLabel = pendingTrade.side === 'BUY' ? '买入' : '卖出'
+                        setMessages((prev) => [...prev, {
+                            role: 'assistant',
+                            content: status === 'ok'
+                                ? `✅ 已记录 ${sideLabel} ${pendingTrade.symbol} ${pendingTrade.quantity}股 @ $${pendingTrade.price}！\n点「📉 持仓」查看最新仓位。`
+                                : `❌ 记录失败: ${(result as { message?: string }).message || '未知错误'}`,
+                        }])
+                    }
                 } catch (err) {
                     setMessages((prev) => [...prev, { role: 'assistant', content: `记录失败: ${err instanceof Error ? err.message : '未知错误'}` }])
                 } finally {
@@ -164,15 +199,45 @@ export default function App() {
                 setMessages((prev) => [...prev, { role: 'user', content: message }])
                 setLoading(true)
                 try {
-                    const result = await parsePortfolio(message)
-                    if (result.status === 'ok' && result.parsed) {
-                        setPendingTrade(result.parsed)
+                    // Try direct trade parsing: "买了100股NVDA 均价135" or "卖了50股AVGO 180块"
+                    const buyMatch = message.match(/买[了入]?\s*(\d+(?:\.\d+)?)\s*股?\s*([A-Z]{1,5})\s*(?:均价|@|价格?)\s*\$?(\d+(?:\.\d+)?)/i) ||
+                        message.match(/买[了入]?\s*([A-Z]{1,5})\s*(\d+(?:\.\d+)?)\s*股?\s*(?:均价|@|价格?)\s*\$?(\d+(?:\.\d+)?)/i)
+                    const sellMatch = message.match(/卖[了出]?\s*(\d+(?:\.\d+)?)\s*股?\s*([A-Z]{1,5})\s*(?:均价|@|价格?)\s*\$?(\d+(?:\.\d+)?)/i) ||
+                        message.match(/卖[了出]?\s*([A-Z]{1,5})\s*(\d+(?:\.\d+)?)\s*股?\s*(?:均价|@|价格?)\s*\$?(\d+(?:\.\d+)?)/i)
+
+                    if (buyMatch || sellMatch) {
+                        const match = (buyMatch || sellMatch)!
+                        const side = buyMatch ? 'BUY' : 'SELL'
+                        // Determine which capture group is the ticker vs quantity
+                        let symbol: string, quantity: number, price: number
+                        if (/^[A-Z]/i.test(match[1])) {
+                            symbol = match[1].toUpperCase()
+                            quantity = parseFloat(match[2])
+                            price = parseFloat(match[3])
+                        } else {
+                            quantity = parseFloat(match[1])
+                            symbol = match[2].toUpperCase()
+                            price = parseFloat(match[3])
+                        }
+                        const total = (quantity * price).toFixed(2)
+                        const sideLabel = side === 'BUY' ? '买入' : '卖出'
+                        setPendingTrade({ symbol, side, quantity, price })
                         setMessages((prev) => [...prev, {
                             role: 'assistant',
-                            content: `${result.preview}\n\n请回复「确认」执行，或「取消」放弃。`,
+                            content: `${sideLabel} ${symbol} ${quantity}股 @ $${price} (总计 $${total})\n\n请回复「确认」执行，或「取消」放弃。`,
                         }])
                     } else {
-                        setMessages((prev) => [...prev, { role: 'assistant', content: `解析失败: ${result.message || '请重新描述'}` }])
+                        // Fallback to old parsePortfolio for complex inputs
+                        const result = await parsePortfolio(message)
+                        if (result.status === 'ok' && result.parsed) {
+                            setPendingTrade({ ...result.parsed, _legacy: true })
+                            setMessages((prev) => [...prev, {
+                                role: 'assistant',
+                                content: `${result.preview}\n\n请回复「确认」执行，或「取消」放弃。`,
+                            }])
+                        } else {
+                            setMessages((prev) => [...prev, { role: 'assistant', content: `解析失败: ${result.message || '请重新描述'}` }])
+                        }
                     }
                     setConnected(true)
                 } catch (err) {
@@ -742,6 +807,133 @@ function formatTechnical(data: Record<string, unknown>): string {
     }
     if (d.resistance_levels?.length) {
         text += `**压力位**: ${d.resistance_levels.map(r => `$${r}`).join(', ')}\n`
+    }
+    return text
+}
+
+function formatDecisions(data: Record<string, unknown>): string {
+    const d = data as {
+        active_buy_plans?: { ticker: string; score?: number; category?: string; limit_1?: number; limit_2?: number; amount_l1?: number; amount_l2?: number; limit_reason?: string }[]
+        exit_signals?: { symbol: string; action: string; urgency?: string; reasoning?: string[] }[]
+        pullback_candidates?: { symbol: string; action: string; pullbackStatus?: string; addLimits?: { level: number; price: number; amount: number }[]; in_cooldown?: boolean }[]
+        conflicts?: { symbol: string; conflict_type: string; severity: string; message: string }[]
+        trade_history?: Record<string, { recently_added?: boolean; recently_trimmed?: boolean; recently_sold?: boolean; cooldown_until?: string; adds_last_10_days?: number }>
+        summary?: { market_regime?: string; total_buy_orders?: number; total_buy_amount?: number; exit_signal_count?: number; pullback_add_count?: number; conflict_count?: number; high_severity_conflicts?: number; held_positions?: number; cash_available?: number }
+        generated_at?: string
+        error?: string
+    }
+
+    if (d.error) return `⚠️ 决策中心暂不可用: ${d.error}`
+
+    let text = `## 🧠 决策中心\n\n`
+
+    // Summary
+    if (d.summary) {
+        const s = d.summary
+        const regimeLabel: Record<string, string> = { market_strong: '🟢 强势', market_neutral: '🟡 中性', market_weak: '🔴 弱势', semi_strong_qqq_weak: '🟡 分化' }
+        text += `**市场**: ${regimeLabel[s.market_regime || ''] || s.market_regime || '未知'}`
+        text += ` | **持仓**: ${s.held_positions || 0}只`
+        text += ` | **现金**: $${(s.cash_available || 0).toLocaleString()}\n`
+        if (s.conflict_count && s.conflict_count > 0) {
+            text += `⚡ **${s.conflict_count}个信号冲突** (${s.high_severity_conflicts || 0}个高危)\n`
+        }
+        text += '\n'
+    }
+
+    // Conflicts (show first if any)
+    if (d.conflicts?.length) {
+        text += `### ⚡ 信号冲突\n`
+        for (const c of d.conflicts) {
+            const sev = c.severity === 'HIGH' ? '🔴' : c.severity === 'MEDIUM' ? '🟡' : '⚪'
+            text += `${sev} **${c.symbol}** [${c.conflict_type}]: ${c.message}\n`
+        }
+        text += '\n'
+    }
+
+    // Exit signals
+    if (d.exit_signals?.length) {
+        const actionLabel: Record<string, string> = {
+            EXIT: '🔴 退出', REDUCE_2_3: '🟠 减2/3', REDUCE_1_2: '🟡 减半',
+            REDUCE_1_3: '🟡 减1/3', TRIM_RISK: '🟡 风控减仓', TRIM_PROFIT: '🟢 止盈',
+            WATCH_PULLBACK: '👀 观察', WATCH: '👀 观察',
+        }
+        text += `### 📉 持仓信号 (${d.exit_signals.length}只需关注)\n`
+        for (const s of d.exit_signals) {
+            text += `${actionLabel[s.action] || s.action} **${s.symbol}**`
+            if (s.reasoning?.length) text += ` — ${s.reasoning[0]}`
+            text += '\n'
+        }
+        text += '\n'
+    }
+
+    // Buy plans
+    if (d.active_buy_plans?.length) {
+        text += `### 🎯 挂单计划 (${d.active_buy_plans.length}只)\n`
+        for (const o of d.active_buy_plans) {
+            const catLabel: Record<string, string> = { core: '核心', semi_core: '半核心', cyclical: '周期', high_beta: '高弹性', beta: '弹性' }
+            text += `**${o.ticker}** [${catLabel[o.category || ''] || o.category}]`
+            if (o.score) text += ` ${o.score}分`
+            text += ` → $${o.limit_1?.toFixed(2)} ($${o.amount_l1}) | $${o.limit_2?.toFixed(2)} ($${o.amount_l2})\n`
+        }
+        if (d.summary?.total_buy_amount) {
+            text += `💰 总挂单 $${d.summary.total_buy_amount.toLocaleString()}\n`
+        }
+        text += '\n'
+    }
+
+    // Pullback candidates
+    if (d.pullback_candidates?.length) {
+        const pbLabel: Record<string, string> = { ADD_NORMAL: '🟢加仓', ADD_SMALL: '🟡少量加', ADD_AGGRESSIVE: '🔵积极加' }
+        text += `### 🔄 回调加仓 (${d.pullback_candidates.length}只)\n`
+        for (const p of d.pullback_candidates) {
+            text += `${pbLabel[p.action] || p.action} **${p.symbol}**`
+            if (p.in_cooldown) text += ` ⏸️冷却中`
+            if (p.addLimits?.length) {
+                const limits = p.addLimits.map(l => `$${l.price.toFixed(2)}($${l.amount})`).join(' | ')
+                text += ` → ${limits}`
+            }
+            text += '\n'
+        }
+        text += '\n'
+    }
+
+    // Trade history summary
+    if (d.trade_history && Object.keys(d.trade_history).length > 0) {
+        const active = Object.entries(d.trade_history).filter(([, ctx]) =>
+            ctx.recently_added || ctx.recently_trimmed || ctx.recently_sold || ctx.cooldown_until
+        )
+        if (active.length > 0) {
+            text += `### 📋 近期交易活动\n`
+            for (const [sym, ctx] of active) {
+                const tags: string[] = []
+                if (ctx.recently_added) tags.push('近期加仓')
+                if (ctx.recently_trimmed) tags.push('近期减仓')
+                if (ctx.recently_sold) tags.push('近期卖出')
+                if (ctx.cooldown_until) tags.push(`冷却至${ctx.cooldown_until}`)
+                if (ctx.adds_last_10_days) tags.push(`10日加仓${ctx.adds_last_10_days}次`)
+                text += `• **${sym}**: ${tags.join(' | ')}\n`
+            }
+            text += '\n'
+        }
+    }
+
+    if (d.generated_at) text += `---\n⏰ ${d.generated_at}\n`
+    return text
+}
+
+function formatNewTradeHistory(data: { trades: Record<string, unknown>[]; count: number }): string {
+    if (!data.trades.length) return '暂无交易记录'
+    let text = `**最近 ${data.count} 条交易记录**:\n\n`
+    for (const t of data.trades) {
+        const side = t.side === 'BUY' ? '买入' : t.side === 'SELL' ? '卖出' : String(t.side)
+        const symbol = t.symbol || t.ticker || '?'
+        const qty = t.quantity || t.shares || 0
+        const price = t.price || 0
+        const total = (Number(qty) * Number(price)).toFixed(2)
+        const source = t.source === 'MANUAL' ? '手动' : t.source === 'MIGRATED' ? '迁移' : String(t.source || '')
+        const time = t.trade_time || t.created_at || ''
+        text += `• ${time} | ${side} **${symbol}** ${qty}股 @ $${price} ($${total}) [${source}]\n`
+        if (t.note) text += `  💬 ${t.note}\n`
     }
     return text
 }
