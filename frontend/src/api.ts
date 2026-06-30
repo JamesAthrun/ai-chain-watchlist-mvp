@@ -135,3 +135,46 @@ export async function getGlobalMarket(refresh = false): Promise<Record<string, u
     if (!resp.ok) throw new Error(`API error: ${resp.status}`)
     return resp.json()
 }
+
+export async function getDecisions(): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/decisions`)
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
+
+export async function createTrade(trade: {
+    symbol: string; side: string; quantity: number; price: number;
+    fee?: number; source?: string; reason?: string; note?: string; trade_time?: string
+}): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/trades`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(trade),
+    })
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
+
+export async function getNewTrades(symbol?: string, limit = 50): Promise<{ trades: Record<string, unknown>[]; count: number }> {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (symbol) params.set('symbol', symbol)
+    const resp = await fetch(`${API_BASE}/trades?${params}`)
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
+
+export async function getRebuildPositions(): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/positions/rebuild`)
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}
+
+export async function adjustCash(amount: number, reason: string): Promise<Record<string, unknown>> {
+    const resp = await fetch(`${API_BASE}/portfolio/cash`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount, reason }),
+    })
+    if (!resp.ok) throw new Error(`API error: ${resp.status}`)
+    return resp.json()
+}

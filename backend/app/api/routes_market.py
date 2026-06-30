@@ -22,6 +22,7 @@ from app.core.report_dashboard import generate_dashboard_report
 from app.core.stock_scorer import score_all_stocks
 from app.core.limit_calculator import generate_daily_limits
 from app.core.global_market import get_global_market
+from app.core.trade_history_context import build_all_contexts, is_in_cooldown
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,20 @@ async def daily_plan():
     held_tickers = {p.ticker for p in portfolio.positions if p.shares > 0}
     scored_new = [s for s in scored if s["ticker"] not in held_tickers]
 
+    # Exclude tickers in cooldown (recently sold for risk or trimmed)
+    trade_contexts = build_all_contexts()
+    cooldown_excluded = []
+    filtered_scored = []
+    for s in scored_new:
+        ctx = trade_contexts.get(s["ticker"])
+        if ctx:
+            in_cd, cd_reason = is_in_cooldown(ctx)
+            if in_cd:
+                cooldown_excluded.append({"ticker": s["ticker"], "reason": cd_reason})
+                continue
+        filtered_scored.append(s)
+    scored_new = filtered_scored
+
     # Map market regime from summary to limit calculator regime
     regime_map = {
         "market_strong": "strong",
@@ -188,6 +203,7 @@ async def daily_plan():
         "limit_orders": orders,
         "total_order_amount": sum(o["amount_l1"] for o in orders),
         "max_daily_amount": account_value * 0.30,
+        "cooldown_excluded": cooldown_excluded,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
 
@@ -252,6 +268,26 @@ async def exit_plan():
     )
     result["addOnPullback"] = pullback_data
 
+    # Enrich with trade history context for each held position
+    trade_contexts = build_all_contexts()
+    trade_context_data = {}
+    for ticker in held_tickers:
+        ctx = trade_contexts.get(ticker)
+        if ctx:
+            trade_context_data[ticker] = {
+                "recently_added": ctx.recently_added,
+                "recently_trimmed": ctx.recently_trimmed,
+                "recently_sold": ctx.recently_sold,
+                "cooldown_until": ctx.cooldown_until,
+                "adds_last_10_days": ctx.adds_last_10_days,
+                "trims_last_10_days": ctx.trims_last_10_days,
+                "last_buy_price": ctx.last_buy_price,
+                "last_sell_price": ctx.last_sell_price,
+                "average_entry_price": ctx.average_entry_price,
+                "realized_pnl": ctx.realized_pnl,
+            }
+    result["trade_history"] = trade_context_data
+
     result["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     return result
 
@@ -281,6 +317,20 @@ async def pullback_add_plan():
         ta_results=ta_results,
         watchlist=watchlist,
     )
+
+    # Annotate with cooldown info — tickers in cooldown should not be added
+    trade_contexts = build_all_contexts()
+    if "plans" in result:
+        for plan in result["plans"]:
+            ticker = plan.get("symbol")
+            ctx = trade_contexts.get(ticker)
+            if ctx:
+                in_cd, cd_reason = is_in_cooldown(ctx)
+                plan["in_cooldown"] = in_cd
+                plan["cooldown_reason"] = cd_reason if in_cd else None
+                plan["recently_added"] = ctx.recently_added
+                plan["adds_last_10_days"] = ctx.adds_last_10_days
+
     return result
 
 
@@ -466,3 +516,25 @@ async def ai_exit_analysis():
 
     result["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     return result
+
+
+@router.get("/trade-history-context")
+async def trade_history_context(symbol: str = Query(None)):
+    """Get trade history context for decision-making.
+
+    Returns cooldown status, recent activity, and P&L context per symbol.
+    """
+    from app.core.trade_history_context import build_all_contexts, build_context
+    from app.core.trade_ledger import get_trades
+
+    trades = get_trades(limit=100000)
+
+    if symbol:
+        ctx = build_context(symbol, trades)
+        return {"context": ctx.model_dump()}
+
+    all_ctx = build_all_contexts(trades)
+    return {
+        "contexts": {s: c.model_dump() for s, c in all_ctx.items()},
+        "count": len(all_ctx),
+    }
